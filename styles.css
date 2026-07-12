@@ -49,7 +49,8 @@ button{font-family:inherit}
 }
 .brand{font:600 15px 'Lora',serif;letter-spacing:.2px;color:var(--text-strong)}
 .topbar-actions{margin-left:auto;display:flex;gap:6px;align-items:center}
-.view-switcher{display:flex;gap:4px;margin-left:14px}
+.view-switcher{display:flex;gap:10px;margin-left:14px;align-items:center}
+.view-mode-toggle{display:flex;gap:2px;padding:2px;border:1px solid var(--border);border-radius:8px}
 
 .sync-status-badge{
   border:1px solid var(--border);background:transparent;cursor:pointer;border-radius:6px;
@@ -134,6 +135,14 @@ button{font-family:inherit}
 .settings-guide li:last-child{margin-bottom:0}
 .settings-guide li strong{color:var(--text)}
 
+.repo-connected{
+  display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--text);margin-top:6px;
+}
+.repo-connected strong{color:var(--text-strong)}
+.repo-connected-dot{
+  width:8px;height:8px;border-radius:50%;flex:none;background:var(--diff-add-text);
+}
+
 .token-row{display:flex;gap:6px;margin-top:6px}
 .token-row input{margin-top:0;flex:1;min-width:0}
 .token-row .tbtn{flex:none;border:1px solid var(--border)}
@@ -216,11 +225,8 @@ button{font-family:inherit}
 .panel-collapse-btn:hover{background:var(--hover-bg-2);color:oklch(0.85 0.01 75)}
 
 .book-tree-title{
-  font:700 13.5px 'Lora',serif;padding:6px 8px;margin:0 0 6px;color:var(--text-strong);cursor:pointer;
-  border-radius:6px;border-left:2px solid transparent;
+  font:700 13.5px 'Lora',serif;padding:6px 8px;margin:0 0 6px;color:var(--text-strong);
 }
-.book-tree-title:hover{background:var(--hover-bg)}
-.book-tree-title.active{background:var(--active-bg);border-left-color:var(--accent);color:var(--accent-hover)}
 
 .chapter-block{margin-bottom:2px}
 .chapter-name{
@@ -228,7 +234,6 @@ button{font-family:inherit}
   border-left:2px solid transparent;margin-left:8px;
 }
 .chapter-name:hover{background:var(--hover-bg)}
-.chapter-name.active{background:var(--active-bg);border-left-color:var(--accent);color:var(--text-strong)}
 .chapter-name.current{color:var(--accent-hover)}
 .scene-row{
   display:flex;justify-content:space-between;padding:7px 9px;margin:2px 0 2px 16px;border-radius:6px;
@@ -236,7 +241,6 @@ button{font-family:inherit}
 }
 .scene-row:hover{background:var(--hover-bg)}
 .scene-row span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.scene-row.active{background:var(--active-bg);border-left-color:var(--accent);color:var(--text)}
 .scene-row.current{color:var(--accent-hover)}
 
 .dashed-btn{
@@ -270,7 +274,7 @@ button{font-family:inherit}
 .scene-eyebrow.active{color:var(--text-strong)}
 .scene-eyebrow.active::before{content:"";display:inline-block;width:3px;height:0.85em;background:var(--accent);margin-right:9px;vertical-align:-0.05em;border-radius:1px}
 .chapter-sticky{
-  position:sticky;top:-44px;z-index:2;background:var(--bg);height:76px;box-sizing:border-box;
+  position:sticky;top:-45px;z-index:2;background:var(--bg);height:76px;box-sizing:border-box;
   display:flex;align-items:center;margin:0 -60px 0;padding:0 60px;border-bottom:1px solid var(--border);
 }
 .chapter-sticky .col{max-width:660px;margin:0 auto;width:100%;display:flex;flex-direction:column;gap:3px}
@@ -280,10 +284,8 @@ button{font-family:inherit}
   outline:none;cursor:text;border-radius:4px;padding:1px 4px;margin:-1px -4px;display:inline-block;
 }
 .chapter-sticky .chapter-title-text:hover, .chapter-sticky .chapter-title-text:focus{background:var(--hover-bg)}
-.chapter-sticky.full .chapter-num{font:700 18px 'Lora',serif}
-.chapter-sticky.full .chapter-title-text{font:500 14px 'Lora',serif}
 .scene-sticky{
-  position:sticky;top:32px;z-index:1;background:var(--bg);margin:0 -10px 12px;padding:8px 10px;
+  position:sticky;top:31px;z-index:1;background:var(--bg);margin:0 -10px 12px;padding:8px 10px;
 }
 .scene-sticky .col{
   display:block;font:500 11.5px 'Manrope';letter-spacing:.03em;color:var(--text-muted);max-width:660px;margin:0 auto;
@@ -309,6 +311,7 @@ button{font-family:inherit}
 .right-panel{flex:none;padding:20px;overflow:auto}
 .right-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
 .right-label{font:600 10.5px 'Manrope';text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)}
+.chapter-title-heading{font:600 11px 'Manrope';text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:4px}
 .scene-title-heading{font:600 15px 'Lora',serif;color:var(--text-strong);margin-bottom:18px}
 .section-label{font:600 10.5px 'Manrope';text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:9px}
 .summary-block{position:relative;margin-bottom:22px}

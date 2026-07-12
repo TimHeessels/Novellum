@@ -2,7 +2,7 @@
 
 import { escapeHtml, formatRelativeTime } from "./model.js";
 import {
-  getGithubSettings, saveGithubSettings, testConnection, createRepoForVault,
+  getGithubSettings, saveGithubSettings, testConnection, createRepoForVault, disconnectGithub,
   listOutbox, listConflicts, syncNow, resolveConflictKeepMine, resolveConflictUseTheirs,
   getLocalContentForConflict,
 } from "./sync-engine.js";
@@ -16,8 +16,8 @@ let guideOpenOverride = null;
 
 export async function renderSettingsView(container, { onBack, notifyBookDataChanged }) {
   const [settings, outbox, conflicts] = await Promise.all([getGithubSettings(), listOutbox(), listConflicts()]);
-  const isConfigured = !!(settings.token && settings.owner && settings.repo);
-  const guideOpen = guideOpenOverride === null ? !isConfigured : guideOpenOverride;
+  const isConnected = !!(settings.token && settings.owner && settings.repo);
+  const guideOpen = guideOpenOverride === null ? !isConnected : guideOpenOverride;
 
   container.innerHTML = `
     <div class="settings-view">
@@ -26,55 +26,19 @@ export async function renderSettingsView(container, { onBack, notifyBookDataChan
         <h2>GitHub Sync Settings</h2>
       </div>
 
-      <details class="settings-guide" id="settingsGuide" ${guideOpen ? "open" : ""}>
-        <summary>How to connect GitHub (first-time setup)</summary>
-        <ol>
-          <li>Click <strong>Create a token on GitHub</strong> below. It opens GitHub with the right permissions pre-filled — sign in if asked, pick an expiration, then click <strong>Generate token</strong> at the bottom of that page.</li>
-          <li>GitHub shows the new token once. Copy it there.</li>
-          <li>Come back here, click <strong>Paste</strong> next to the token field, then <strong>Save</strong>.</li>
-          <li>Fill in <strong>Owner</strong> (your GitHub username) and <strong>Repo</strong>. Click <strong>Create Repo</strong> if you don't have one yet, or <strong>Test Connection</strong> to check access to an existing one.</li>
-          <li>Click <strong>Sync Now</strong>. The token stays saved on this device, so this is a one-time setup.</li>
-        </ol>
-      </details>
+      ${isConnected ? renderConnectedPhase(settings) : renderSetupPhase(settings, guideOpen)}
 
-      <div class="settings-section">
-        <div class="section-label">Personal Access Token</div>
-        <a class="settings-link" target="_blank" rel="noopener"
-           href="https://github.com/settings/tokens/new?scopes=repo&description=WriterTool">Create a token on GitHub &rarr;</a>
-        <div class="token-row">
-          <input type="password" id="settingsToken" placeholder="ghp_..." value="${escapeHtml(settings.token || "")}">
-          <button class="tbtn" id="settingsTokenPaste" type="button">Paste</button>
-          <button class="tbtn" id="settingsTokenShow" type="button">Show</button>
+      ${isConnected ? `
+        <div class="settings-section">
+          <div class="section-label">Sync</div>
+          <div>Last synced: ${settings.lastSyncedAt ? formatRelativeTime(settings.lastSyncedAt) : "Never"}</div>
+          <div>Pending changes: ${outbox.length}</div>
+          <button class="modal-btn done" id="settingsSyncNow" style="margin-top:8px">Sync Now</button>
+          <div id="syncStatus" class="settings-status"></div>
         </div>
-      </div>
 
-      <div class="settings-section settings-row">
-        <div>
-          <div class="section-label">Owner</div>
-          <input type="text" id="settingsOwner" placeholder="your-github-username" value="${escapeHtml(settings.owner || "")}">
-        </div>
-        <div>
-          <div class="section-label">Repo</div>
-          <input type="text" id="settingsRepo" placeholder="writertool-vault" value="${escapeHtml(settings.repo || "")}">
-        </div>
-      </div>
-
-      <div class="settings-actions-row">
-        <button class="modal-btn done" id="settingsSave">Save</button>
-        <button class="tbtn" id="settingsTest">Test Connection</button>
-        <button class="tbtn" id="settingsCreateRepo">Create Repo</button>
-      </div>
-      <div id="settingsStatus" class="settings-status"></div>
-
-      <div class="settings-section">
-        <div class="section-label">Sync</div>
-        <div>Last synced: ${settings.lastSyncedAt ? formatRelativeTime(settings.lastSyncedAt) : "Never"}</div>
-        <div>Pending changes: ${outbox.length}</div>
-        <button class="modal-btn done" id="settingsSyncNow" style="margin-top:8px">Sync Now</button>
-        <div id="syncStatus" class="settings-status"></div>
-      </div>
-
-      ${conflicts.length > 0 ? renderConflictsSection(conflicts) : ""}
+        ${conflicts.length > 0 ? renderConflictsSection(conflicts) : ""}
+      ` : ""}
 
       <div class="settings-section">
         <div class="section-label">Manual Backup</div>
@@ -90,11 +54,19 @@ export async function renderSettingsView(container, { onBack, notifyBookDataChan
     </div>
   `;
 
-  const readFields = () => ({
-    token: document.getElementById("settingsToken").value.trim(),
-    owner: document.getElementById("settingsOwner").value.trim(),
-    repo: document.getElementById("settingsRepo").value.trim(),
-  });
+  // The token/owner/repo inputs only exist in the setup phase (not connected) — once
+  // connected, fall back to the already-saved settings so callers like Sync Now can still
+  // read a value without caring which phase is currently rendered.
+  const readFields = () => {
+    const tokenEl = document.getElementById("settingsToken");
+    const ownerEl = document.getElementById("settingsOwner");
+    const repoEl = document.getElementById("settingsRepo");
+    return {
+      token: tokenEl ? tokenEl.value.trim() : settings.token || "",
+      owner: ownerEl ? ownerEl.value.trim() : settings.owner || "",
+      repo: repoEl ? repoEl.value.trim() : settings.repo || "",
+    };
+  };
 
   function setStatus(id, msg, isError) {
     const el = document.getElementById(id);
@@ -106,90 +78,136 @@ export async function renderSettingsView(container, { onBack, notifyBookDataChan
 
   document.getElementById("settingsBack").onclick = onBack;
 
-  document.getElementById("settingsGuide").addEventListener("toggle", (e) => {
-    guideOpenOverride = e.target.open;
-  });
+  const guideEl = document.getElementById("settingsGuide");
+  if (guideEl) {
+    guideEl.addEventListener("toggle", (e) => {
+      guideOpenOverride = e.target.open;
+    });
+  }
 
-  document.getElementById("settingsTokenPaste").onclick = async () => {
-    const input = document.getElementById("settingsToken");
-    try {
-      const text = (await navigator.clipboard.readText()).trim();
-      if (text) input.value = text;
-      input.focus();
-    } catch {
-      // Clipboard read can be blocked (permissions, insecure context, etc.) — fall back to
-      // letting the user paste manually rather than failing silently.
-      input.focus();
-      setStatus("settingsStatus", "Couldn't read the clipboard automatically — paste into the field with Ctrl+V instead.", true);
-    }
-  };
-
-  document.getElementById("settingsTokenShow").onclick = (e) => {
-    const input = document.getElementById("settingsToken");
-    const showing = input.type === "text";
-    input.type = showing ? "password" : "text";
-    e.target.textContent = showing ? "Show" : "Hide";
-  };
-
-  document.getElementById("settingsSave").onclick = async () => {
-    await saveGithubSettings(readFields());
-    setStatus("settingsStatus", "Saved.", false);
-  };
-
-  document.getElementById("settingsTest").onclick = async () => {
-    setStatus("settingsStatus", "Testing…", false);
-    try {
-      await saveGithubSettings(readFields());
-      const result = await testConnection();
-      if (!result.repoOk) {
-        setStatus("settingsStatus", `Token OK (signed in as ${result.login}). Set an owner/repo and test again, or create a repo below.`, false);
-      } else {
-        setStatus("settingsStatus", `Connected as ${result.login}. Repo access OK (default branch: ${result.defaultBranch}).`, false);
+  const tokenPasteBtn = document.getElementById("settingsTokenPaste");
+  if (tokenPasteBtn) {
+    tokenPasteBtn.onclick = async () => {
+      const input = document.getElementById("settingsToken");
+      try {
+        const text = (await navigator.clipboard.readText()).trim();
+        if (text) input.value = text;
+        input.focus();
+      } catch {
+        // Clipboard read can be blocked (permissions, insecure context, etc.) — fall back to
+        // letting the user paste manually rather than failing silently.
+        input.focus();
+        setStatus("settingsStatus", "Couldn't read the clipboard automatically — paste into the field with Ctrl+V instead.", true);
       }
-    } catch (err) {
-      setStatus("settingsStatus", `Failed: ${err.message}`, true);
-    }
-  };
+    };
+  }
 
-  document.getElementById("settingsCreateRepo").onclick = async () => {
-    setStatus("settingsStatus", "Creating repo…", false);
-    try {
+  const tokenShowBtn = document.getElementById("settingsTokenShow");
+  if (tokenShowBtn) {
+    tokenShowBtn.onclick = (e) => {
+      const input = document.getElementById("settingsToken");
+      const showing = input.type === "text";
+      input.type = showing ? "password" : "text";
+      e.target.textContent = showing ? "Show" : "Hide";
+    };
+  }
+
+  const saveBtn = document.getElementById("settingsSave");
+  if (saveBtn) {
+    saveBtn.onclick = async () => {
       await saveGithubSettings(readFields());
-      const desiredName = document.getElementById("settingsRepo").value.trim() || "writertool-vault";
-      const { owner, repo } = await createRepoForVault(desiredName);
-      // Re-render first (it rebuilds the whole view, wiping any message set beforehand),
-      // then set the status message on the freshly-created element.
       await renderSettingsView(container, { onBack, notifyBookDataChanged });
-      setStatus("settingsStatus", `Created ${owner}/${repo}.`, false);
-    } catch (err) {
-      setStatus("settingsStatus", `Failed: ${err.message}`, true);
-    }
-  };
+      setStatus("settingsStatus", "Saved.", false);
+    };
+  }
 
-  document.getElementById("settingsSyncNow").onclick = async () => {
-    setStatus("syncStatus", "Syncing…", false);
-    // Save whatever's currently in the fields first — otherwise a token typed but not yet
-    // explicitly saved would be silently ignored in favor of the last-persisted value.
-    await saveGithubSettings(readFields());
-    const bookId = getActiveBookId();
-    const { pushResult, pullResult } = await syncNow(bookId, { force: true });
-    state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
-    if (pullResult.pulled > 0 && notifyBookDataChanged) await notifyBookDataChanged(bookId);
-    // Push and pull can both flag the same target as conflicting in one pass (e.g. a structural
-    // push conflict gets rediscovered during reconciliation) — they'd double-count it if summed,
-    // so re-read the actual conflict list rather than trusting each pass's own tally.
-    const totalConflicts = (await listConflicts()).length;
-    await renderSettingsView(container, { onBack, notifyBookDataChanged });
-    if (pushResult.paused) {
-      setStatus("syncStatus", `Paused: ${pushResult.pauseReason}`, true);
-    } else {
-      setStatus(
-        "syncStatus",
-        `Pushed ${pushResult.pushed} file(s), pulled ${pullResult.pulled} file(s), ${totalConflicts} conflict(s).`,
-        totalConflicts > 0
-      );
-    }
-  };
+  const testBtn = document.getElementById("settingsTest");
+  if (testBtn) {
+    testBtn.onclick = async () => {
+      setStatus("settingsStatus", "Testing…", false);
+      try {
+        await saveGithubSettings(readFields());
+        const result = await testConnection();
+        if (!result.repoOk) {
+          setStatus("settingsStatus", `Token OK (signed in as ${result.login}). Set an owner/repo and test again, or create a repo below.`, false);
+        } else {
+          setStatus("settingsStatus", `Connected as ${result.login}. Repo access OK (default branch: ${result.defaultBranch}).`, false);
+        }
+      } catch (err) {
+        setStatus("settingsStatus", `Failed: ${err.message}`, true);
+      }
+    };
+  }
+
+  const createRepoBtn = document.getElementById("settingsCreateRepo");
+  if (createRepoBtn) {
+    createRepoBtn.onclick = async () => {
+      setStatus("settingsStatus", "Creating repo…", false);
+      try {
+        await saveGithubSettings(readFields());
+        const desiredName = document.getElementById("settingsRepo").value.trim() || "writertool-vault";
+        const { owner, repo } = await createRepoForVault(desiredName);
+        // Re-render first (it rebuilds the whole view, wiping any message set beforehand),
+        // then set the status message on the freshly-created element.
+        await renderSettingsView(container, { onBack, notifyBookDataChanged });
+        setStatus("settingsStatus", `Created ${owner}/${repo}.`, false);
+      } catch (err) {
+        setStatus("settingsStatus", `Failed: ${err.message}`, true);
+      }
+    };
+  }
+
+  const syncNowBtn = document.getElementById("settingsSyncNow");
+  if (syncNowBtn) {
+    syncNowBtn.onclick = async () => {
+      setStatus("syncStatus", "Syncing…", false);
+      // Save whatever's currently in the fields first — otherwise a token typed but not yet
+      // explicitly saved would be silently ignored in favor of the last-persisted value.
+      await saveGithubSettings(readFields());
+      const bookId = getActiveBookId();
+      const { pushResult, pullResult } = await syncNow(bookId, { force: true });
+      state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
+      if (pullResult.pulled > 0 && notifyBookDataChanged) await notifyBookDataChanged(bookId);
+      // Push and pull can both flag the same target as conflicting in one pass (e.g. a structural
+      // push conflict gets rediscovered during reconciliation) — they'd double-count it if summed,
+      // so re-read the actual conflict list rather than trusting each pass's own tally.
+      const totalConflicts = (await listConflicts()).length;
+      await renderSettingsView(container, { onBack, notifyBookDataChanged });
+      if (pushResult.paused) {
+        setStatus("syncStatus", `Paused: ${pushResult.pauseReason}`, true);
+      } else {
+        setStatus(
+          "syncStatus",
+          `Pushed ${pushResult.pushed} file(s), pulled ${pullResult.pulled} file(s), ${totalConflicts} conflict(s).`,
+          totalConflicts > 0
+        );
+      }
+    };
+  }
+
+  const disconnectBtn = document.getElementById("settingsDisconnect");
+  if (disconnectBtn) {
+    disconnectBtn.onclick = () => {
+      document.getElementById("disconnectConfirmRow").style.display = "block";
+      disconnectBtn.style.display = "none";
+    };
+  }
+  const disconnectCancelBtn = document.getElementById("settingsDisconnectCancel");
+  if (disconnectCancelBtn) {
+    disconnectCancelBtn.onclick = () => {
+      document.getElementById("disconnectConfirmRow").style.display = "none";
+      document.getElementById("settingsDisconnect").style.display = "";
+    };
+  }
+  const disconnectConfirmBtn = document.getElementById("settingsDisconnectConfirm");
+  if (disconnectConfirmBtn) {
+    disconnectConfirmBtn.onclick = async () => {
+      await disconnectGithub();
+      guideOpenOverride = null;
+      await renderSettingsView(container, { onBack, notifyBookDataChanged });
+      setStatus("settingsStatus", "Disconnected. Set up a repo below to connect again.", false);
+    };
+  }
 
   document.getElementById("settingsExportJson").onclick = () => {
     const blob = new Blob([exportDataAsJson()], { type: "application/json" });
@@ -262,6 +280,78 @@ export async function renderSettingsView(container, { onBack, notifyBookDataChan
       };
     }
   });
+}
+
+/** Not-yet-connected phase: the first-time setup guide plus the token/owner/repo form. */
+function renderSetupPhase(settings, guideOpen) {
+  return `
+    <details class="settings-guide" id="settingsGuide" ${guideOpen ? "open" : ""}>
+      <summary>How to connect GitHub (first-time setup)</summary>
+      <ol>
+        <li>Click <strong>Create a token on GitHub</strong> below. It opens GitHub with the right permissions pre-filled — sign in if asked, pick an expiration, then click <strong>Generate token</strong> at the bottom of that page.</li>
+        <li>GitHub shows the new token once. Copy it there.</li>
+        <li>Come back here, click <strong>Paste</strong> next to the token field, then <strong>Save</strong>.</li>
+        <li>Fill in <strong>Owner</strong> (your GitHub username) and <strong>Repo</strong>. Click <strong>Create Repo</strong> if you don't have one yet, or <strong>Test Connection</strong> to check access to an existing one.</li>
+        <li>Click <strong>Sync Now</strong>. The token stays saved on this device, so this is a one-time setup.</li>
+      </ol>
+    </details>
+
+    <div class="settings-section">
+      <div class="section-label">Personal Access Token</div>
+      <a class="settings-link" target="_blank" rel="noopener"
+         href="https://github.com/settings/tokens/new?scopes=repo&description=WriterTool">Create a token on GitHub &rarr;</a>
+      <div class="token-row">
+        <input type="password" id="settingsToken" placeholder="ghp_..." value="${escapeHtml(settings.token || "")}">
+        <button class="tbtn" id="settingsTokenPaste" type="button">Paste</button>
+        <button class="tbtn" id="settingsTokenShow" type="button">Show</button>
+      </div>
+    </div>
+
+    <div class="settings-section settings-row">
+      <div>
+        <div class="section-label">Owner</div>
+        <input type="text" id="settingsOwner" placeholder="your-github-username" value="${escapeHtml(settings.owner || "")}">
+      </div>
+      <div>
+        <div class="section-label">Repo</div>
+        <input type="text" id="settingsRepo" placeholder="writertool-vault" value="${escapeHtml(settings.repo || "")}">
+      </div>
+    </div>
+
+    <div class="settings-actions-row">
+      <button class="modal-btn done" id="settingsSave">Save</button>
+      <button class="tbtn" id="settingsTest">Test Connection</button>
+      <button class="tbtn" id="settingsCreateRepo">Create Repo</button>
+    </div>
+    <div id="settingsStatus" class="settings-status"></div>
+  `;
+}
+
+/** Connected phase: a clear "which repo" banner plus the one way out — Disconnect — instead
+ *  of re-showing the raw token/owner/repo form (see settings-ui redesign: a fresh setup should
+ *  never look ambiguous about whether a repo is already wired up). */
+function renderConnectedPhase(settings) {
+  return `
+    <div class="settings-section">
+      <div class="section-label">Repository</div>
+      <div class="repo-connected">
+        <span class="repo-connected-dot"></span>
+        Connected to <strong>${escapeHtml(settings.owner)}/${escapeHtml(settings.repo)}</strong>
+      </div>
+      <div class="settings-actions-row" style="margin-top:10px">
+        <button class="tbtn" id="settingsDisconnect">Disconnect&hellip;</button>
+      </div>
+      <div id="disconnectConfirmRow" class="settings-status" style="display:none">
+        This clears the saved token, owner/repo, and sync history on this device — your manuscript
+        itself is untouched. Use this to switch to a different GitHub account or repo.
+        <div class="settings-actions-row" style="margin-top:8px">
+          <button class="modal-btn delete" id="settingsDisconnectConfirm">Yes, Disconnect</button>
+          <button class="tbtn" id="settingsDisconnectCancel">Cancel</button>
+        </div>
+      </div>
+      <div id="settingsStatus" class="settings-status"></div>
+    </div>
+  `;
 }
 
 function renderConflictsSection(conflicts) {

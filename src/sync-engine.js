@@ -1,6 +1,6 @@
 "use strict";
 
-import { dbGet, dbPut, dbGetAll, dbGetAllByIndex, dbDelete, dbReplaceWhereIndex } from "./db.js";
+import { dbGet, dbPut, dbGetAll, dbGetAllByIndex, dbDelete, dbReplaceWhereIndex, dbReplaceAll } from "./db.js";
 import { sceneToMarkdown, markdownToScene } from "./model.js";
 import { getActiveBookId, flushSaveNow } from "./persistence.js";
 import * as gh from "./github-client.js";
@@ -26,6 +26,21 @@ async function patchGithubSettings(patch) {
 
 export async function saveGithubSettings({ token, owner, repo }) {
   await patchGithubSettings({ token, owner, repo });
+}
+
+/** Fully decouples this device from whatever repo it was connected to: clears the saved
+ *  token/owner/repo plus every piece of repo-specific sync bookkeeping (shas, conflicts).
+ *  The manuscript itself is untouched — reconnecting (to the same repo or a different one)
+ *  re-bootstraps from scratch via ensureBookBootstrapped, same as a brand-new install. */
+export async function disconnectGithub() {
+  await dbPut("settings", {
+    key: SETTINGS_KEY, token: "", owner: "", repo: "", defaultBranch: "", lastSyncedAt: null,
+  });
+  await Promise.all([
+    dbReplaceAll("conflicts", []),
+    dbReplaceAll("manifestMeta", []),
+    dbReplaceAll("sceneSync", []),
+  ]);
 }
 
 export async function testConnection() {

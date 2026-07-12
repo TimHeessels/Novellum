@@ -41,6 +41,7 @@ export function setActiveScene(chapterId, sceneId) {
   renderLeftPanel();
   renderRightPanel();
   syncCenterActiveHighlight();
+  syncFullChapterBanner();
   persistUiPrefs();
 }
 
@@ -48,6 +49,70 @@ function syncCenterActiveHighlight() {
   centerPanelEl.querySelectorAll("[data-highlight-scene-id]").forEach((el) => {
     el.classList.toggle("active", el.dataset.highlightSceneId === state.activeSceneId);
   });
+}
+
+// Where a docked .scene-sticky actually renders, relative to centerPanelEl's own
+// getBoundingClientRect().top. CSS position:sticky's `top` offset is measured from the
+// scrolling container's *padding* edge, not its border edge — so scene-sticky's `top: 31px`
+// (styles.css) lands 31px below .center-panel's own 44px top padding, i.e. at 75px from the
+// container's outer edge, not 31px. Getting this wrong means a docked header's rect.top never
+// satisfies the check at all, so scroll-spy silently keeps whatever the previous scene was.
+// A couple of px of slack absorbs rounding so the handoff between two adjacent stuck headers
+// doesn't flicker between them.
+const CENTER_PANEL_TOP_PADDING = 44; // .center-panel's padding-top (styles.css)
+const SCENE_STICKY_DOCK_Y = CENTER_PANEL_TOP_PADDING + 31 + 1;
+let scrollSpyRaf = null;
+
+// Set while a *deliberate* navigation (clicking a scene/chapter, "Sync Now" jumping to a scene,
+// etc.) is programmatically scrolling the center panel via scrollElementToTop. That scroll can
+// briefly land somewhere that doesn't reflect the newly-selected scene at all — e.g. a target
+// near the end of a short document can't be scrolled all the way to its dock position, so
+// scrollElementToTop's clamp-compensation overshoots and leaves some earlier scene's header
+// docked instead. The scroll-spy must not "correct" the already-correct selection based on that
+// transient position, so it's suppressed for the duration of any programmatic scroll and only
+// re-armed once things have settled — genuine user scrolling (wheel/trackpad/scrollbar) is
+// unaffected since it never touches this flag.
+let suppressScrollSpy = false;
+
+/** As the user scrolls the chapter/full manuscript view, the scene whose sticky header is
+ *  currently docked at the top is "where you are" — mirror that into activeScene/activeChapter
+ *  so the left sidebar tracks scroll position, not just clicks into scene text. Throttled to
+ *  one check per animation frame; setActiveScene itself no-ops if the scene hasn't changed. */
+function handleCenterScrollSpy() {
+  if (suppressScrollSpy) return;
+  if (state.view !== "chapter" && state.view !== "full") return;
+  if (scrollSpyRaf !== null) return;
+  scrollSpyRaf = requestAnimationFrame(() => {
+    scrollSpyRaf = null;
+    updateActiveSceneFromScroll();
+  });
+}
+
+function updateActiveSceneFromScroll() {
+  const stickies = centerPanelEl.querySelectorAll(".scene-sticky[data-highlight-scene-id]");
+  if (!stickies.length) return;
+
+  // Scrolled to (or within a hair of) the bottom: always treat the final scene as current, even
+  // if it's short enough that its header never reaches the dock line — otherwise a short last
+  // scene could never become selected no matter how far you scroll into it.
+  const { scrollTop, scrollHeight, clientHeight } = centerPanelEl;
+  if (scrollTop + clientHeight >= scrollHeight - 2) {
+    const last = stickies[stickies.length - 1];
+    const { chapter: ch, scene: sc } = getSceneAndChapter(last.dataset.highlightSceneId);
+    if (sc) setActiveScene(ch.id, sc.id);
+    return;
+  }
+
+  const containerTop = centerPanelEl.getBoundingClientRect().top;
+  // Stacked sticky headers dock in document order: every header at-or-above the dock line
+  // currently qualifies, and the last one (furthest down) is whichever is actually docked
+  // right now — earlier ones have already been pushed out from under it by later content.
+  let current = stickies[0];
+  for (const el of stickies) {
+    if (el.getBoundingClientRect().top - containerTop <= SCENE_STICKY_DOCK_Y) current = el;
+  }
+  const { chapter: ch, scene: sc } = getSceneAndChapter(current.dataset.highlightSceneId);
+  if (sc) setActiveScene(ch.id, sc.id);
 }
 
 function syncSceneTitleDisplays(sceneId) {
@@ -83,10 +148,12 @@ function restorePanelsBeforeOverview() {
   state.rightOpen = state.rightOpenBeforeOverview;
 }
 
+/** Selects a chapter and navigates to it — but never changes view mode (Scene/Chapter/Full is
+ *  controlled solely by the topbar toggle now), so this just moves the selection and scrolls
+ *  within whatever mode is already active. */
 function openChapter(chapterId) {
   const ch = getChapter(chapterId);
   if (!ch) return;
-  const sameChapter = state.activeChapterId === chapterId;
   const leavingOverview = state.view === "overview";
 
   // Restore whichever scene was last selected in this chapter, so switching away and back
@@ -100,20 +167,10 @@ function openChapter(chapterId) {
   if (leavingOverview) {
     state.view = resolveViewAfterOverview();
     restorePanelsBeforeOverview();
-  } else if (state.view === "full") {
-    // Clicking the already-active chapter isolates it; a different chapter just scrolls to
-    // it while staying in the full-manuscript view.
-    state.view = sameChapter ? "chapter" : "full";
-  } else if (sameChapter) {
-    // Clicking the already-active chapter again toggles back out to the full manuscript.
-    state.view = "full";
-  } else {
-    state.view = "chapter";
   }
 
   render();
-  if (state.view === "full") scrollToChapterHeader(ch.id);
-  else if (targetSceneId) focusSceneText(targetSceneId);
+  if (targetSceneId) focusSceneText(targetSceneId);
 }
 
 // `Element.scrollIntoView` computes its scroll delta from the target's *current* bounding rect.
@@ -126,6 +183,11 @@ function openChapter(chapterId) {
 // since nothing repaints between the reset and the final scrollTop assignment).
 function scrollElementToTop(el) {
   if (!el) return;
+  // This can land at a scroll position that transiently docks a *different* header than `el`
+  // (see the scrollSpy-suppression comment above `suppressScrollSpy`'s declaration) — the
+  // scroll-spy must ignore the scroll events this triggers rather than "correct" an already-
+  // correct selection based on them.
+  suppressScrollSpy = true;
   centerPanelEl.scrollTop = 0;
   const containerTop = centerPanelEl.getBoundingClientRect().top;
   const naturalTop = el.getBoundingClientRect().top - containerTop;
@@ -137,48 +199,40 @@ function scrollElementToTop(el) {
   // header's actual rendered position and the following content agree.
   const residual = el.getBoundingClientRect().top - containerTop;
   if (residual !== 0) centerPanelEl.scrollTop -= residual;
+  // A synchronous scrollTop write's "scroll" event is typically coalesced and dispatched on a
+  // later animation frame rather than immediately — two nested rAFs comfortably outlast that
+  // before the spy is re-armed for genuine user scrolling.
+  requestAnimationFrame(() => requestAnimationFrame(() => { suppressScrollSpy = false; }));
 }
 
-function scrollToChapterHeader(chapterId) {
-  requestAnimationFrame(() => {
-    const titleEl = centerPanelEl.querySelector(`.chapter-title-text[data-chapter-id="${chapterId}"]`);
-    const stickyEl = titleEl && titleEl.closest(".chapter-sticky");
-    scrollElementToTop(stickyEl);
-  });
-}
-
+/** Selects a scene and navigates to it — never changes view mode (see openChapter), just moves
+ *  the selection and scrolls/focuses within whatever mode (Scene/Chapter/Full) is already active. */
 function openScene(chapterId, sceneId) {
-  const sameScene = state.activeChapterId === chapterId && state.activeSceneId === sceneId;
   const leavingOverview = state.view === "overview";
+  setActiveSceneState(chapterId, sceneId);
 
   if (leavingOverview) {
-    setActiveSceneState(chapterId, sceneId);
     state.view = resolveViewAfterOverview();
     restorePanelsBeforeOverview();
-  } else if (state.view === "full") {
-    if (sameScene) {
-      // Re-clicking the active scene while browsing the full manuscript isolates its chapter.
-      state.view = "chapter";
-    } else {
-      // A different scene just moves the selection there, staying in full-manuscript view.
-      setActiveSceneState(chapterId, sceneId);
-    }
-  } else if (sameScene) {
-    // Clicking the already-active scene again toggles between chapter context and full isolation.
-    state.view = state.view === "scene" ? "chapter" : "scene";
-  } else {
-    setActiveSceneState(chapterId, sceneId);
-    state.view = "chapter";
   }
 
   render();
   focusSceneText(sceneId);
 }
 
-function openFullManuscript() {
-  state.view = "full";
+/** Switches Scene/Chapter/Full view mode — the topbar toggle's only job. Selection (which
+ *  chapter/scene is active) is untouched; this just changes how much surrounding context is
+ *  shown, then scrolls to keep the current selection in view. Doesn't steal focus/place the
+ *  cursor — that's reserved for actually clicking a scene/chapter, not just changing zoom. */
+function setViewMode(mode) {
+  if (state.view === mode) return;
+  const leavingOverview = state.view === "overview";
+  state.view = mode;
+  if (leavingOverview) restorePanelsBeforeOverview();
   render();
-  if (state.activeSceneId) focusSceneText(state.activeSceneId);
+  if ((mode === "full" || mode === "chapter") && state.activeSceneId) {
+    focusSceneText(state.activeSceneId, { focusText: false });
+  }
 }
 
 function openOverview() {
@@ -190,14 +244,6 @@ function openOverview() {
     state.rightOpen = false;
   }
   state.view = "overview";
-  render();
-}
-
-function switchToWrite() {
-  if (state.view === "overview") {
-    state.view = resolveViewAfterOverview();
-    restorePanelsBeforeOverview();
-  }
   render();
 }
 
@@ -323,10 +369,13 @@ function handleImportMarkdownFile(e) {
   reader.readAsText(file);
 }
 
-function focusSceneText(sceneId) {
+/** Scrolls a scene into view and, by default, places the cursor in its text — the latter is
+ *  skipped for a bare view-mode switch (Scene/Chapter/Full toggle), where jumping into edit
+ *  mode would be a surprising side effect of just changing zoom level. */
+function focusSceneText(sceneId, { focusText = true } = {}) {
   requestAnimationFrame(() => {
     const el = document.querySelector(`.manuscript-text[data-scene-id="${sceneId}"]`);
-    if (el) el.focus();
+    if (el && focusText) el.focus();
     // Scroll to the scene's heading (scene-sticky/scene-eyebrow), not the text itself, so the
     // scene starts at the top of the viewport instead of the text being centered mid-scroll.
     const heading = centerPanelEl.querySelector(`[data-highlight-scene-id="${sceneId}"]`);
@@ -498,7 +547,11 @@ function renderTopbar() {
       ${state.bookSwitcherOpen ? renderBookSwitcherPopover() : ""}
     </div>
     <div class="view-switcher">
-      <button class="tbtn ${state.view !== "overview" ? "active" : ""}" id="topbarWriteBtn">Write</button>
+      <div class="view-mode-toggle">
+        <button class="tbtn ${state.view === "scene" ? "active" : ""}" id="viewModeScene">Scene</button>
+        <button class="tbtn ${state.view === "chapter" ? "active" : ""}" id="viewModeChapter">Chapter</button>
+        <button class="tbtn ${state.view === "full" ? "active" : ""}" id="viewModeFull">Full</button>
+      </div>
       <button class="tbtn ${state.view === "overview" ? "active" : ""}" id="topbarOverviewBtn">Overview</button>
     </div>
     <div class="topbar-actions">
@@ -506,7 +559,9 @@ function renderTopbar() {
     </div>
   `;
 
-  document.getElementById("topbarWriteBtn").onclick = switchToWrite;
+  document.getElementById("viewModeScene").onclick = () => setViewMode("scene");
+  document.getElementById("viewModeChapter").onclick = () => setViewMode("chapter");
+  document.getElementById("viewModeFull").onclick = () => setViewMode("full");
   document.getElementById("topbarOverviewBtn").onclick = openOverview;
 
   document.getElementById("bookSwitcherBtn").onclick = (e) => {
@@ -708,16 +763,15 @@ function renderLeftPanel() {
 
   let body = "";
   if (state.leftTab === "manuscript") {
-    const fullActive = state.view === "full" ? "active" : "";
-    const bookTitleHtml = `<div class="book-tree-title ${fullActive}" data-action="open-full">${escapeHtml(data.title || "Untitled Book")}</div>`;
+    const bookTitleHtml = `<div class="book-tree-title">${escapeHtml(data.title || "Untitled Book")}</div>`;
     const chaptersHtml = data.chapters
       .map((ch) => {
         const isActiveChapter = ch.id === state.activeChapterId;
-        const chapterActive = isActiveChapter ? (state.view === "chapter" ? "active" : "current") : "";
+        const chapterActive = isActiveChapter ? "current" : "";
         const scenesHtml = ch.scenes
           .map((sc) => {
             const isActiveScene = sc.id === state.activeSceneId;
-            const cls = isActiveScene ? (state.view === "scene" ? "active" : "current") : "";
+            const cls = isActiveScene ? "current" : "";
             return `<div class="scene-row ${cls}" data-chapter-id="${ch.id}" data-scene-id="${sc.id}"><span>${escapeHtml(sceneLabel(ch, sc))}</span></div>`;
           })
           .join("");
@@ -794,8 +848,6 @@ function renderLeftPanel() {
   leftPanelEl.querySelectorAll(".chapter-name").forEach((el) => {
     el.onclick = () => openChapter(el.dataset.chapterId);
   });
-  const fullBtnEl = leftPanelEl.querySelector('[data-action="open-full"]');
-  if (fullBtnEl) fullBtnEl.onclick = openFullManuscript;
   leftPanelEl.querySelectorAll(".bible-card").forEach((el) => {
     el.onclick = () => openBibleModal(el.dataset.bibleKind, el.dataset.bibleId);
   });
@@ -1023,11 +1075,40 @@ function chapterStickyInner(ch) {
   return `<span class="col"><span class="chapter-num">Chapter ${chapterNumber(ch)}</span><span class="chapter-title-text" contenteditable="true" data-chapter-id="${ch.id}"></span></span>`;
 }
 
+/** Read-only banner content — deliberately not contenteditable/data-chapter-id, since
+ *  #fullChapterBanner's whole innerHTML gets replaced on every scroll-driven chapter change
+ *  (see syncFullChapterBanner); making it editable would blow away the user's cursor mid-edit
+ *  the moment an "input" event fired. Editing a chapter's title happens via its lone
+ *  .chapter-sticky in Chapter mode instead. */
+function chapterBannerInner(ch) {
+  return `<span class="col"><span class="chapter-num">Chapter ${chapterNumber(ch)}</span><span class="chapter-title-text">${escapeHtml(ch.title)}</span></span>`;
+}
+
+/** Full-manuscript mode shows one persistent sticky banner for "whichever chapter you're
+ *  currently reading" instead of stacking a .chapter-sticky per chapter, or repeating a heading
+ *  inline at each chapter's own start:
+ *  - Stacked sticky headers (one per chapter) hand off with a gap roughly equal to their own
+ *    height — an unavoidable property of CSS position:sticky, not fixable with spacing tweaks.
+ *  - A banner shown *alongside* a per-chapter inline heading duplicates "Chapter N" text
+ *    whenever both are on-screen together, and toggling the banner's visibility to dodge that
+ *    makes it stop being sticky right when you'd expect it least (see git history — tried both).
+ *  One element, always visible, always stuck from the very first frame, sidesteps all of it:
+ *  there's nothing for it to hand off to or duplicate, so its text just updates in place as
+ *  state.activeChapterId changes. */
+function syncFullChapterBanner() {
+  if (state.view !== "full") return;
+  const banner = document.getElementById("fullChapterBanner");
+  const ch = getChapter(state.activeChapterId);
+  if (!banner || !ch) return;
+  banner.innerHTML = chapterBannerInner(ch);
+}
+
 function syncChapterTitleDisplays(chapterId) {
   const ch = getChapter(chapterId);
   if (!ch) return;
   const nameEl = leftPanelEl.querySelector(`.chapter-name[data-chapter-id="${chapterId}"]`);
   if (nameEl) nameEl.textContent = chapterLabel(ch);
+  if (state.activeChapterId === chapterId) syncFullChapterBanner();
 }
 
 function bindChapterStickyHeaders(root) {
@@ -1093,12 +1174,16 @@ function renderCenter() {
       ${addChapterSceneButtons()}
     `;
   } else {
-    // full
+    // full — one persistent #fullChapterBanner (sticky) shows "whichever chapter you're
+    // currently reading" per state.activeChapterId — see the comment on syncFullChapterBanner
+    // for why this is deliberately the ONLY chapter heading rendered in this view (no per-
+    // chapter inline duplicate). Chapter boundaries within the scenes below are still visible
+    // from scene numbering resetting to "Scene 1" and the spacing between chapter-groups.
+    const bannerChapter = getChapter(state.activeChapterId) || data.chapters[0];
     const chaptersHtml = data.chapters
       .map(
         (ch) => `
       <div class="chapter-group">
-        <div class="chapter-sticky full">${chapterStickyInner(ch)}</div>
         ${ch.scenes
           .map(
             (sc) => `
@@ -1113,6 +1198,7 @@ function renderCenter() {
       .join("");
     html = `
       <div class="doc-title">${escapeHtml(data.title || "Untitled Book")} — Full Manuscript</div>
+      ${bannerChapter ? `<div class="chapter-sticky" id="fullChapterBanner">${chapterBannerInner(bannerChapter)}</div>` : ""}
       ${chaptersHtml}
       ${addChapterSceneButtons()}
     `;
@@ -1170,6 +1256,7 @@ function renderRightPanel() {
       <span class="right-label">Scene Details</span>
       <button class="tbtn" id="rightHide" style="background:transparent;color:var(--text-muted);padding:4px 6px">Hide &rsaquo;</button>
     </div>
+    <div class="chapter-title-heading">Chapter ${chapterNumber(ch)}</div>
     <div class="scene-title-heading">Scene ${sceneNumber(ch, sc)}</div>
     <div class="summary-block">
       <div class="section-label">Title</div>
@@ -1409,6 +1496,7 @@ export function initApp() {
   try { document.execCommand("defaultParagraphSeparator", false, "p"); } catch { /* unsupported in some browsers, non-fatal */ }
   document.addEventListener("selectionchange", handleSelectionChange);
   centerPanelEl.addEventListener("scroll", hideSelectionToolbar);
+  centerPanelEl.addEventListener("scroll", handleCenterScrollSpy);
 
   render();
 
