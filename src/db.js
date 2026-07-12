@@ -88,8 +88,8 @@ export function openDatabase() {
     req.onerror = () => reject(req.error);
     req.onblocked = () => {
       console.warn(
-        "WriterTool: IndexedDB upgrade is blocked by another open tab of this app. " +
-        "Close other tabs/windows running WriterTool and reload this page."
+        "Novellum: IndexedDB upgrade is blocked by another open tab of this app. " +
+        "Close other tabs/windows running Novellum and reload this page."
       );
     };
   });

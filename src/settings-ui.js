@@ -146,7 +146,7 @@ export async function renderSettingsView(container, callbacks) {
       setStatus("settingsStatus", "Creating repo…", false);
       try {
         await saveGithubSettings(readFields());
-        const desiredName = document.getElementById("settingsRepo").value.trim() || "writertool-vault";
+        const desiredName = document.getElementById("settingsRepo").value.trim() || "novellum-vault";
         const { owner, repo } = await createRepoForVault(desiredName);
         // Re-render first (it rebuilds the whole view, wiping any message set beforehand),
         // then set the status message on the freshly-created element.
@@ -220,7 +220,7 @@ export async function renderSettingsView(container, callbacks) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `writertool-export-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `novellum-export-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -317,7 +317,7 @@ function renderSetupPhase(settings, guideOpen) {
     <div class="settings-section">
       <div class="section-label">Personal Access Token</div>
       <a class="settings-link" target="_blank" rel="noopener"
-         href="https://github.com/settings/tokens/new?scopes=repo&description=WriterTool">Create a token on GitHub &rarr;</a>
+         href="https://github.com/settings/tokens/new?scopes=repo&description=Novellum">Create a token on GitHub &rarr;</a>
       <div class="token-row">
         <input type="password" id="settingsToken" placeholder="ghp_..." value="${escapeHtml(settings.token || "")}">
         <button class="tbtn" id="settingsTokenPaste" type="button">Paste</button>
@@ -332,7 +332,7 @@ function renderSetupPhase(settings, guideOpen) {
       </div>
       <div>
         <div class="section-label">Repo</div>
-        <input type="text" id="settingsRepo" placeholder="writertool-vault" value="${escapeHtml(settings.repo || "")}">
+        <input type="text" id="settingsRepo" placeholder="novellum-vault" value="${escapeHtml(settings.repo || "")}">
       </div>
     </div>
 

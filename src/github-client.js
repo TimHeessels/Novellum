@@ -84,7 +84,7 @@ export async function createRepo(token, name) {
     name,
     private: true,
     auto_init: true,
-    description: "WriterTool manuscript vault",
+    description: "Novellum manuscript vault",
   });
   return { owner: data.owner.login, repo: data.name };
 }

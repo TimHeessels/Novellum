@@ -1,6 +1,6 @@
 "use strict";
 
-import { dbGet, dbGetAllByIndex, dbGetAll, dbPut, dbReplaceWhereIndex } from "./db.js";
+import { dbGet, dbGetAllByIndex, dbGetAll, dbPut, dbReplaceWhereIndex, dbDelete } from "./db.js";
 import { data } from "./model.js";
 
 export const DEFAULT_BOOK_ID = "book-default";
@@ -123,7 +123,7 @@ export function scheduleSave() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    persistNow().catch((err) => console.error("WriterTool: local save failed", err));
+    persistNow().catch((err) => console.error("Novellum: local save failed", err));
   }, SAVE_DEBOUNCE_MS);
 }
 
@@ -133,7 +133,29 @@ export function flushSaveNow() {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  return persistNow().catch((err) => console.error("WriterTool: flush save failed", err));
+  return persistNow().catch((err) => console.error("Novellum: flush save failed", err));
+}
+
+/** Permanently removes a book and everything under it (chapters, scenes, story bible, and all
+ *  local sync bookkeeping) from IndexedDB. Local-only: any files already pushed to a connected
+ *  GitHub repo are left as-is, same as this app never deletes a repo's history for you elsewhere. */
+export async function deleteBook(bookId) {
+  if (saveTimer && activeBookId === bookId) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  const [outbox, conflicts] = await Promise.all([dbGetAll("outbox"), dbGetAll("conflicts")]);
+  await Promise.all([
+    dbDelete("books", bookId),
+    dbDelete("manifestMeta", bookId),
+    dbReplaceWhereIndex("chapters", "bookId", bookId, []),
+    dbReplaceWhereIndex("scenes", "bookId", bookId, []),
+    dbReplaceWhereIndex("bibleEntries", "bookId", bookId, []),
+    dbReplaceWhereIndex("sceneSync", "bookId", bookId, []),
+    ...outbox.filter((e) => e.bookId === bookId).map((e) => dbDelete("outbox", e.key)),
+    ...conflicts.filter((c) => c.bookId === bookId).map((c) => dbDelete("conflicts", c.key)),
+  ]);
+  if (activeBookId === bookId) activeBookId = null;
 }
 
 /* ---------------------------------------------------------------- */
@@ -183,7 +205,7 @@ export function exportDataAsJson() {
 export function importDataFromJson(jsonString) {
   const parsed = JSON.parse(jsonString);
   if (!parsed || !Array.isArray(parsed.chapters)) {
-    throw new Error("Invalid WriterTool export file.");
+    throw new Error("Invalid Novellum export file.");
   }
   data.title = parsed.title || data.title;
   data.chapters = parsed.chapters;

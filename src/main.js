@@ -14,13 +14,13 @@ const RESTORABLE_VIEWS = ["scene", "chapter", "full", "overview", "settings"];
  *  nothing but the static <title> — no console access on most phones/tablets means that was
  *  effectively undiagnosable. Render the error on-screen instead so it's visible wherever it happens. */
 function showFatalError(err) {
-  console.error("WriterTool: fatal boot error", err);
+  console.error("Novellum: fatal boot error", err);
   const app = document.getElementById("app");
   if (!app) return;
   app.innerHTML = `
     <div style="height:100%;display:flex;align-items:center;justify-content:center;padding:24px;font-family:system-ui,sans-serif;">
       <div style="max-width:560px;color:#e8b4b4;">
-        <div style="font-size:15px;font-weight:600;margin-bottom:8px;color:#f0d0d0;">WriterTool failed to start</div>
+        <div style="font-size:15px;font-weight:600;margin-bottom:8px;color:#f0d0d0;">Novellum failed to start</div>
         <div style="font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;opacity:.85;">${String(err?.stack || err?.message || err)}</div>
       </div>
     </div>`;
@@ -141,7 +141,7 @@ async function runAutoSync() {
     }
     refreshSyncStatusUI();
   } catch (err) {
-    console.error("WriterTool: background sync failed", err);
+    console.error("Novellum: background sync failed", err);
   } finally {
     autoSyncInFlight = false;
   }

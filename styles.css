@@ -328,7 +328,17 @@ button{font-family:inherit}
 .manuscript-text p:last-child{margin-bottom:0}
 .manuscript-text.is-empty::before{content:attr(data-placeholder);color:var(--text-muted);pointer-events:none}
 .scene-block{margin-bottom:30px}
-.chapter-group{margin-bottom:26px}
+.chapter-group{margin-bottom:46px}
+.chapter-heading-inline{
+  max-width:660px;margin:0 auto 22px;padding:0 8px;box-sizing:border-box;
+  display:flex;flex-direction:column;gap:3px;
+}
+.chapter-heading-inline .chapter-num{font:700 20px 'Lora',serif;color:var(--text-strong);line-height:1.15}
+.chapter-heading-inline .chapter-title-text{
+  font:500 15px 'Lora',serif;color:var(--text-dim);line-height:1.2;
+  outline:none;cursor:text;border-radius:4px;padding:1px 4px;margin:-1px -4px;display:inline-block;
+}
+.chapter-heading-inline .chapter-title-text:hover, .chapter-heading-inline .chapter-title-text:focus{background:var(--hover-bg)}
 
 .actions-row{display:flex;gap:10px;margin:26px auto 0;max-width:660px}
 

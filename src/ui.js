@@ -10,7 +10,7 @@ import { state } from "./state.js";
 import {
   scheduleSave,
   listBooks, loadBook, setActiveBookId, getActiveBookId, persistNow, flushSaveNow,
-  saveUiPrefs,
+  saveUiPrefs, deleteBook,
 } from "./persistence.js";
 import { enqueueSync, ensureBookBootstrapped, reconcileBook, getSyncStatus } from "./sync-engine.js";
 import { renderSettingsView } from "./settings-ui.js";
@@ -19,7 +19,7 @@ import { exportManuscript } from "./export.js";
 import { buildChaptersFromMarkdown } from "./import.js";
 
 function markDirty(kind, targetId) {
-  enqueueSync(kind, targetId).catch((err) => console.error("WriterTool: outbox enqueue failed", err));
+  enqueueSync(kind, targetId).catch((err) => console.error("Novellum: outbox enqueue failed", err));
 }
 
 /* ---------------------------------------------------------------- */
@@ -540,7 +540,7 @@ function openSettings() {
 
 function renderTopbar() {
   const currentTitle = data.title || "Untitled Book";
-  document.title = `${currentTitle} — Novel Writer`;
+  document.title = `${currentTitle} — Novellum`;
   topbarEl.innerHTML = `
     <div class="book-switcher">
       <button class="book-switcher-btn" id="bookSwitcherBtn">${escapeHtml(currentTitle)} <span class="caret">&#9662;</span></button>
@@ -739,6 +739,52 @@ async function handleCreateBook() {
   focusSceneText(data.chapters[0].scenes[0].id);
 }
 
+function handleRenameBook(newTitle) {
+  const title = (newTitle || "").trim() || "Untitled Book";
+  if (title === data.title) return;
+  data.title = title;
+  scheduleSave();
+  markDirty("manifest", getActiveBookId());
+  state.books = state.books.map((b) => (b.id === state.activeBookId ? { ...b, title } : b));
+  render();
+}
+
+/** Deletes the given book entirely (local IndexedDB only — see persistence.js deleteBook) and
+ *  lands on another existing book, or a freshly-seeded one if that was the last book left. */
+async function handleDeleteBook(bookId) {
+  await flushSaveNow();
+  await deleteBook(bookId);
+  const remainingBooks = await listBooks();
+
+  if (remainingBooks.length === 0) {
+    const newBookId = uid("book");
+    data.title = "Untitled Book";
+    data.chapters = [chapter("Chapter 1", [scene("Untitled Scene", "", "", [])])];
+    data.characters = [];
+    data.locations = [];
+    data.concepts = [];
+    setActiveBookId(newBookId);
+    await persistNow();
+    await ensureBookBootstrapped(newBookId);
+    state.books = await listBooks();
+    state.activeBookId = newBookId;
+  } else {
+    const nextBookId = remainingBooks[0].id;
+    await loadBook(nextBookId);
+    setActiveBookId(nextBookId);
+    await ensureBookBootstrapped(nextBookId);
+    state.books = remainingBooks;
+    state.activeBookId = nextBookId;
+  }
+
+  state.lastSceneByChapter = {};
+  setActiveSceneState(data.chapters[0].id, data.chapters[0].scenes[0].id);
+  if (state.view === "overview") restorePanelsBeforeOverview();
+  state.view = "scene";
+  state.bookSwitcherOpen = false;
+  render();
+}
+
 /* ---- Left panel ---- */
 
 function renderLeftPanel() {
@@ -810,7 +856,16 @@ function renderLeftPanel() {
   } else {
     body = `
       <div class="book-tab">
-        <div class="section-label">Export</div>
+        <div class="settings-section">
+          <div class="section-label">Book Details</div>
+          <div class="settings-actions-row">
+            <input type="text" id="bookTitleInput" placeholder="Untitled Book" style="flex:1;min-width:160px;margin-top:0" value="${escapeHtml(data.title || "")}">
+            <button class="modal-btn done" id="bookTitleSave">Save</button>
+          </div>
+          <div id="bookTitleStatus" class="settings-status"></div>
+        </div>
+
+        <div class="section-label" style="margin-top:24px">Export</div>
         <div class="settings-status" style="margin:0 0 10px">Download the full manuscript as a nicely formatted, printable document.</div>
         <button class="tbtn" data-action="export-manuscript">Export Manuscript</button>
 
@@ -819,6 +874,18 @@ function renderLeftPanel() {
         <button class="tbtn" data-action="import-manuscript">Import from Markdown</button>
         <input type="file" id="importMdFile" accept=".md,.markdown,text/markdown" style="display:none">
         <div id="importStatus" class="settings-status"></div>
+
+        <div class="section-label" style="margin-top:24px">Danger Zone</div>
+        <button class="tbtn" id="deleteBookBtn">Delete Book&hellip;</button>
+        <div id="deleteBookConfirmRow" class="settings-status" style="display:none">
+          This permanently deletes &ldquo;${escapeHtml(data.title || "Untitled Book")}&rdquo; — every chapter, scene, and
+          story bible entry — from this device. If GitHub sync is set up, any files already pushed there are left
+          untouched. This cannot be undone.
+          <div class="settings-actions-row" style="margin-top:8px">
+            <button class="modal-btn delete" id="deleteBookConfirm">Yes, Delete Book</button>
+            <button class="tbtn" id="deleteBookCancel">Cancel</button>
+          </div>
+        </div>
       </div>
     `;
   }
@@ -860,6 +927,34 @@ function renderLeftPanel() {
   if (importBtnEl && importFileEl) {
     importBtnEl.onclick = () => importFileEl.click();
     importFileEl.onchange = handleImportMarkdownFile;
+  }
+
+  const bookTitleSaveBtn = document.getElementById("bookTitleSave");
+  if (bookTitleSaveBtn) {
+    bookTitleSaveBtn.onclick = () => {
+      handleRenameBook(document.getElementById("bookTitleInput").value);
+      const status = document.getElementById("bookTitleStatus");
+      if (status) status.textContent = "Saved.";
+    };
+  }
+
+  const deleteBookBtn = document.getElementById("deleteBookBtn");
+  if (deleteBookBtn) {
+    deleteBookBtn.onclick = () => {
+      document.getElementById("deleteBookConfirmRow").style.display = "block";
+      deleteBookBtn.style.display = "none";
+    };
+  }
+  const deleteBookCancelBtn = document.getElementById("deleteBookCancel");
+  if (deleteBookCancelBtn) {
+    deleteBookCancelBtn.onclick = () => {
+      document.getElementById("deleteBookConfirmRow").style.display = "none";
+      document.getElementById("deleteBookBtn").style.display = "";
+    };
+  }
+  const deleteBookConfirmBtn = document.getElementById("deleteBookConfirm");
+  if (deleteBookConfirmBtn) {
+    deleteBookConfirmBtn.onclick = () => handleDeleteBook(state.activeBookId);
   }
 }
 
@@ -1075,6 +1170,15 @@ function chapterStickyInner(ch) {
   return `<span class="col"><span class="chapter-num">Chapter ${chapterNumber(ch)}</span><span class="chapter-title-text" contenteditable="true" data-chapter-id="${ch.id}"></span></span>`;
 }
 
+/** Full-manuscript mode's marker for "a new chapter starts here" — sits inline in the normal
+ *  document flow (not sticky) right above that chapter's first scene, so scrolling past it is
+ *  obviously a chapter break rather than just another scene. Editable via the same
+ *  data-chapter-id/contenteditable wiring as chapterStickyInner (bindChapterStickyHeaders picks
+ *  up any matching element), so renaming works here same as in Chapter mode. */
+function chapterHeadingInlineHtml(ch) {
+  return `<div class="chapter-heading-inline"><span class="chapter-num">Chapter ${chapterNumber(ch)}</span><span class="chapter-title-text" contenteditable="true" data-chapter-id="${ch.id}"></span></div>`;
+}
+
 /** Read-only banner content — deliberately not contenteditable/data-chapter-id, since
  *  #fullChapterBanner's whole innerHTML gets replaced on every scroll-driven chapter change
  *  (see syncFullChapterBanner); making it editable would blow away the user's cursor mid-edit
@@ -1178,16 +1282,19 @@ function renderCenter() {
       ${addChapterSceneButtons()}
     `;
   } else {
-    // full — one persistent #fullChapterBanner (sticky) shows "whichever chapter you're
-    // currently reading" per state.activeChapterId — see the comment on syncFullChapterBanner
-    // for why this is deliberately the ONLY chapter heading rendered in this view (no per-
-    // chapter inline duplicate). Chapter boundaries within the scenes below are still visible
-    // from scene numbering resetting to "Scene 1" and the spacing between chapter-groups.
+    // full — a persistent #fullChapterBanner (sticky) shows "whichever chapter you're
+    // currently reading" per state.activeChapterId, updated on scroll (see
+    // syncFullChapterBanner). Every chapter after the first also gets its own inline heading
+    // (chapterHeadingInlineHtml), in normal flow, right above its first scene — that's what
+    // makes a chapter break visible as you scroll past it. The first chapter skips it: the
+    // banner already reads that chapter's name from the very top of the page, before any
+    // scrolling, so a second copy right underneath it would just be a duplicate.
     const bannerChapter = getChapter(state.activeChapterId) || data.chapters[0];
     const chaptersHtml = data.chapters
       .map(
-        (ch) => `
+        (ch, i) => `
       <div class="chapter-group">
+        ${i > 0 ? chapterHeadingInlineHtml(ch) : ""}
         ${ch.scenes
           .map(
             (sc) => `
