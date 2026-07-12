@@ -1,11 +1,10 @@
 "use strict";
 
-/** Classic LCS-based line diff. Returns an array of { type: "same"|"add"|"remove", text }
- *  describing how to turn `oldText` into `newText`, line by line. Fine for manuscript-scale
- *  text (a scene, a manifest, a bible file) — not meant for huge documents. */
-export function diffLines(oldText, newText) {
-  const a = (oldText || "").split("\n");
-  const b = (newText || "").split("\n");
+/** Classic LCS-based diff over two token arrays. Returns an array of
+ *  { type: "same"|"add"|"remove", text } describing how to turn `a` into `b`, one token at a
+ *  time. Shared by `diffLines` (tokens = lines) and `diffWords` (tokens = words) below. Fine for
+ *  manuscript-scale text (a scene, a manifest, a bible file) — not meant for huge documents. */
+function diffTokens(a, b) {
   const n = a.length;
   const m = b.length;
 
@@ -34,4 +33,18 @@ export function diffLines(oldText, newText) {
   while (i < n) { result.push({ type: "remove", text: a[i] }); i++; }
   while (j < m) { result.push({ type: "add", text: b[j] }); j++; }
   return result;
+}
+
+/** Line-by-line diff of two whole files — the raw, everything-included view (frontmatter and
+ *  all). Used for the "raw file diff" fallback, not the field-level conflict summary. */
+export function diffLines(oldText, newText) {
+  return diffTokens((oldText || "").split("\n"), (newText || "").split("\n"));
+}
+
+/** Word-by-word diff of two strings, splitting on (and preserving) whitespace so the result can
+ *  be rejoined into readable prose with additions/removals highlighted inline — the "track
+ *  changes" style view used for a single changed field (title, summary, scene text). */
+export function diffWords(oldText, newText) {
+  const split = (s) => (s || "").split(/(\s+)/).filter((t) => t !== "");
+  return diffTokens(split(oldText), split(newText));
 }

@@ -1135,6 +1135,10 @@ function renderCenter() {
         renderLeftPanel();
         renderRightPanel();
       },
+      // Lets settings-ui.js refresh the topbar badge/conflict banner the moment a conflict is
+      // resolved or a manual sync finishes, instead of leaving the stale banner up until the
+      // next 20s tick or a full re-render (e.g. navigating back to the manuscript).
+      onSyncStatusChanged: refreshSyncStatusUI,
     });
     return;
   }

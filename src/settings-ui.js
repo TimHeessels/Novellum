@@ -1,20 +1,21 @@
 "use strict";
 
-import { escapeHtml, formatRelativeTime } from "./model.js";
+import { escapeHtml, formatRelativeTime, markdownToScene } from "./model.js";
 import {
   getGithubSettings, saveGithubSettings, testConnection, createRepoForVault, disconnectGithub,
   listOutbox, listConflicts, syncNow, resolveConflictKeepMine, resolveConflictUseTheirs,
   getLocalContentForConflict,
 } from "./sync-engine.js";
 import { getActiveBookId, exportDataAsJson, importDataFromJson } from "./persistence.js";
-import { diffLines } from "./diff.js";
+import { diffLines, diffWords } from "./diff.js";
 import { state } from "./state.js";
 
 // Whether the setup guide is expanded — persists across re-renders within the session (but not
 // across page loads) so a re-render triggered by e.g. "Create Repo" doesn't undo the user's toggle.
 let guideOpenOverride = null;
 
-export async function renderSettingsView(container, { onBack, notifyBookDataChanged }) {
+export async function renderSettingsView(container, callbacks) {
+  const { onBack, notifyBookDataChanged, onSyncStatusChanged } = callbacks;
   const [settings, outbox, conflicts] = await Promise.all([getGithubSettings(), listOutbox(), listConflicts()]);
   const isConnected = !!(settings.token && settings.owner && settings.repo);
   const guideOpen = guideOpenOverride === null ? !isConnected : guideOpenOverride;
@@ -116,7 +117,7 @@ export async function renderSettingsView(container, { onBack, notifyBookDataChan
   if (saveBtn) {
     saveBtn.onclick = async () => {
       await saveGithubSettings(readFields());
-      await renderSettingsView(container, { onBack, notifyBookDataChanged });
+      await renderSettingsView(container, callbacks);
       setStatus("settingsStatus", "Saved.", false);
     };
   }
@@ -149,7 +150,7 @@ export async function renderSettingsView(container, { onBack, notifyBookDataChan
         const { owner, repo } = await createRepoForVault(desiredName);
         // Re-render first (it rebuilds the whole view, wiping any message set beforehand),
         // then set the status message on the freshly-created element.
-        await renderSettingsView(container, { onBack, notifyBookDataChanged });
+        await renderSettingsView(container, callbacks);
         setStatus("settingsStatus", `Created ${owner}/${repo}.`, false);
       } catch (err) {
         setStatus("settingsStatus", `Failed: ${err.message}`, true);
@@ -160,6 +161,10 @@ export async function renderSettingsView(container, { onBack, notifyBookDataChan
   const syncNowBtn = document.getElementById("settingsSyncNow");
   if (syncNowBtn) {
     syncNowBtn.onclick = async () => {
+      // The click handler itself is race-free (syncNow() serializes against the background
+      // timer regardless), but without this a double-click still queues up a second, pointless
+      // round trip before the first one's even rendered.
+      syncNowBtn.disabled = true;
       setStatus("syncStatus", "Syncing…", false);
       // Save whatever's currently in the fields first — otherwise a token typed but not yet
       // explicitly saved would be silently ignored in favor of the last-persisted value.
@@ -172,7 +177,7 @@ export async function renderSettingsView(container, { onBack, notifyBookDataChan
       // push conflict gets rediscovered during reconciliation) — they'd double-count it if summed,
       // so re-read the actual conflict list rather than trusting each pass's own tally.
       const totalConflicts = (await listConflicts()).length;
-      await renderSettingsView(container, { onBack, notifyBookDataChanged });
+      await renderSettingsView(container, callbacks);
       if (pushResult.paused) {
         setStatus("syncStatus", `Paused: ${pushResult.pauseReason}`, true);
       } else {
@@ -182,6 +187,7 @@ export async function renderSettingsView(container, { onBack, notifyBookDataChan
           totalConflicts > 0
         );
       }
+      if (onSyncStatusChanged) onSyncStatusChanged();
     };
   }
 
@@ -204,7 +210,7 @@ export async function renderSettingsView(container, { onBack, notifyBookDataChan
     disconnectConfirmBtn.onclick = async () => {
       await disconnectGithub();
       guideOpenOverride = null;
-      await renderSettingsView(container, { onBack, notifyBookDataChanged });
+      await renderSettingsView(container, callbacks);
       setStatus("settingsStatus", "Disconnected. Set up a repo below to connect again.", false);
     };
   }
@@ -249,10 +255,10 @@ export async function renderSettingsView(container, { onBack, notifyBookDataChan
         const diffEl = document.getElementById(`diff-${c.key}`);
         const isHidden = diffEl.style.display === "none";
         diffEl.style.display = isHidden ? "block" : "none";
-        toggleBtn.textContent = isHidden ? "Hide Diff" : "View Diff";
+        toggleBtn.textContent = isHidden ? "Hide Changes" : "View Changes";
         if (isHidden && !diffEl.dataset.loaded) {
           diffEl.dataset.loaded = "1";
-          await loadDiffInto(diffEl, c);
+          await loadSummaryInto(diffEl, c);
         }
       };
     }
@@ -260,23 +266,35 @@ export async function renderSettingsView(container, { onBack, notifyBookDataChan
     const theirsBtn = document.getElementById(`useTheirs-${c.key}`);
     if (keepBtn) {
       keepBtn.onclick = async () => {
+        // Give immediate feedback — resolving involves a network push, which can take a
+        // moment, and clicking into silence reads as "did that even register?".
+        keepBtn.disabled = true;
+        if (theirsBtn) theirsBtn.disabled = true;
+        keepBtn.textContent = "Resolving…";
+        setStatus("syncStatus", "Resolving — pushing your version…", false);
         // "Keep Mine" only re-queues the push — actually push it now instead of leaving the
         // user to notice nothing happened and hit Sync Now again themselves.
         await resolveConflictKeepMine(c.key);
         const { pushResult } = await syncNow(null, { force: true });
-        await renderSettingsView(container, { onBack, notifyBookDataChanged });
+        await renderSettingsView(container, callbacks);
         setStatus("syncStatus", `Resolved. Pushed ${pushResult.pushed} file(s), ${pushResult.conflicts} conflict(s).`, pushResult.conflicts > 0);
+        if (onSyncStatusChanged) onSyncStatusChanged();
       };
     }
     if (theirsBtn) {
       theirsBtn.onclick = async () => {
+        theirsBtn.disabled = true;
+        if (keepBtn) keepBtn.disabled = true;
+        theirsBtn.textContent = "Resolving…";
+        setStatus("syncStatus", "Resolving — taking GitHub's version…", false);
         await resolveConflictUseTheirs(c.key);
         // The accepted GitHub content only landed in IndexedDB — if this book is the one
         // currently open, the in-memory manuscript/UI must be refreshed too, or the next
         // local edit would silently overwrite the version we just accepted.
         if (notifyBookDataChanged) await notifyBookDataChanged(c.bookId);
-        await renderSettingsView(container, { onBack, notifyBookDataChanged });
+        await renderSettingsView(container, callbacks);
         setStatus("syncStatus", "Took GitHub's version.", false);
+        if (onSyncStatusChanged) onSyncStatusChanged();
       };
     }
   });
@@ -354,15 +372,32 @@ function renderConnectedPhase(settings) {
   `;
 }
 
+/** Best-effort human label for a conflict row's header. The remote copy is already sitting on
+ *  the conflict record (captured when the conflict was detected), so a scene's title can be
+ *  read synchronously — no extra IndexedDB round trip needed just to render the list. */
+function conflictTitle(c) {
+  if (c.kind === "scene" && c.remoteContent) {
+    try {
+      const title = markdownToScene(c.remoteContent).title;
+      if (title) return title;
+    } catch {
+      // Fall through to the generic label below if the stored remote copy doesn't parse.
+    }
+  }
+  if (c.kind === "manifest") return "Manuscript structure";
+  if (c.kind === "bible") return "Story bible";
+  return "Scene";
+}
+
 function renderConflictsSection(conflicts) {
   const rows = conflicts
     .map(
       (c) => `
     <div class="conflict-row">
       <div class="conflict-row-head">
-        <div>${escapeHtml(c.kind)} &mdash; ${escapeHtml(c.targetId)}</div>
+        <div>${escapeHtml(conflictTitle(c))}</div>
         <div class="conflict-actions">
-          <button class="tbtn" id="toggleDiff-${c.key}">View Diff</button>
+          <button class="tbtn" id="toggleDiff-${c.key}">View Changes</button>
           <button class="tbtn" id="keepMine-${c.key}">Keep Mine</button>
           <button class="tbtn" id="useTheirs-${c.key}">Use GitHub's</button>
         </div>
@@ -379,16 +414,222 @@ function renderConflictsSection(conflicts) {
   `;
 }
 
-/** Fetches the local version of a conflicting file and renders a line-by-line diff against
- *  the remote copy already captured on the conflict record, so "Keep Mine" / "Use GitHub's"
- *  isn't a blind guess. */
-async function loadDiffInto(container, conflict) {
-  container.innerHTML = `<div class="diff-loading">Loading diff&hellip;</div>`;
+/** Inline "track changes" rendering of one changed field: the two versions rejoined into a
+ *  single flow of text, with GitHub's removed words struck through and your added words
+ *  underlined — reads like a word-processor's tracked-changes view rather than a code diff. */
+function wordDiffHtml(oldText, newText) {
+  if (oldText === newText) return escapeHtml(oldText || "");
+  return diffWords(oldText, newText)
+    .map(({ type, text }) => {
+      const safe = escapeHtml(text);
+      if (type === "add") return `<span class="worddiff-add">${safe}</span>`;
+      if (type === "remove") return `<span class="worddiff-remove">${safe}</span>`;
+      return safe;
+    })
+    .join("");
+}
+
+/** Compact +/- rendering for a changed list (to-dos, bible entries, chapters) where individual
+ *  entries were added or removed rather than edited word-by-word. */
+function listDiffHtml(removedItems, addedItems) {
+  const removed = removedItems.map((t) => `<div class="conflict-list-line worddiff-remove-line">&minus; ${escapeHtml(t)}</div>`);
+  const added = addedItems.map((t) => `<div class="conflict-list-line worddiff-add-line">+ ${escapeHtml(t)}</div>`);
+  return [...removed, ...added].join("");
+}
+
+/** Strips a scene body's rich-text HTML down to plain text for diffing purposes — good enough to
+ *  show which words changed; formatting-only edits (e.g. bold) won't show up here, which is the
+ *  point (see "Show raw file diff" for the byte-exact view). */
+function htmlToPlainText(html) {
+  const div = document.createElement("div");
+  div.innerHTML = html || "";
+  return div.textContent || "";
+}
+
+function summarizeScene(remoteRaw, localRaw) {
+  const theirs = markdownToScene(remoteRaw);
+  const mine = markdownToScene(localRaw);
+  const fields = [];
+  if (mine.title !== theirs.title) {
+    fields.push({ label: "Title", html: wordDiffHtml(theirs.title, mine.title) });
+  }
+  if (mine.summary !== theirs.summary) {
+    fields.push({ label: "Summary", html: wordDiffHtml(theirs.summary, mine.summary) });
+  }
+  const mineText = htmlToPlainText(mine.text);
+  const theirsText = htmlToPlainText(theirs.text);
+  if (mineText !== theirsText) {
+    fields.push({ label: "Scene text", html: wordDiffHtml(theirsText, mineText), prose: true });
+  }
+  const mineTodos = mine.todos || [];
+  const theirsTodos = theirs.todos || [];
+  if (JSON.stringify(mineTodos) !== JSON.stringify(theirsTodos)) {
+    fields.push({
+      label: "To-dos",
+      html: listDiffHtml(theirsTodos.filter((t) => !mineTodos.includes(t)), mineTodos.filter((t) => !theirsTodos.includes(t))),
+    });
+  }
+  return fields;
+}
+
+function summarizeManifest(remoteRaw, localRaw) {
+  const theirs = JSON.parse(remoteRaw);
+  const mine = JSON.parse(localRaw);
+  const fields = [];
+  if (mine.title !== theirs.title) {
+    fields.push({ label: "Book title", html: wordDiffHtml(theirs.title, mine.title) });
+  }
+
+  const theirsCh = theirs.chapters || [];
+  const mineCh = mine.chapters || [];
+  const theirsById = new Map(theirsCh.map((ch) => [ch.id, ch]));
+  const mineById = new Map(mineCh.map((ch) => [ch.id, ch]));
+
+  const addedChapters = mineCh.filter((ch) => !theirsById.has(ch.id)).map((ch) => ch.title);
+  const removedChapters = theirsCh.filter((ch) => !mineById.has(ch.id)).map((ch) => ch.title);
+  if (addedChapters.length || removedChapters.length) {
+    fields.push({ label: "Chapters added/removed", html: listDiffHtml(removedChapters, addedChapters) });
+  }
+
+  const renamed = mineCh.filter((ch) => theirsById.has(ch.id) && theirsById.get(ch.id).title !== ch.title);
+  if (renamed.length) {
+    fields.push({
+      label: "Chapters renamed",
+      html: renamed.map((ch) => `<div class="conflict-list-line">${wordDiffHtml(theirsById.get(ch.id).title, ch.title)}</div>`).join(""),
+    });
+  }
+
+  const commonIds = mineCh.map((ch) => ch.id).filter((id) => theirsById.has(id));
+  const theirsOrder = theirsCh.map((ch) => ch.id).filter((id) => mineById.has(id));
+  const mineOrder = mineCh.map((ch) => ch.id).filter((id) => theirsById.has(id));
+  if (JSON.stringify(theirsOrder) !== JSON.stringify(mineOrder)) {
+    fields.push({ label: "Chapter order", html: "Chapters were reordered." });
+  }
+
+  let movedSceneRefs = 0;
+  for (const id of commonIds) {
+    const theirsScenes = new Set(theirsById.get(id).sceneIds || []);
+    const mineScenes = new Set(mineById.get(id).sceneIds || []);
+    for (const sid of mineScenes) if (!theirsScenes.has(sid)) movedSceneRefs += 1;
+    for (const sid of theirsScenes) if (!mineScenes.has(sid)) movedSceneRefs += 1;
+  }
+  if (movedSceneRefs > 0) {
+    fields.push({ label: "Scene placement", html: "Scenes were added, removed, or moved between chapters on one side." });
+  }
+
+  return fields;
+}
+
+function summarizeBible(remoteRaw, localRaw) {
+  const theirs = JSON.parse(remoteRaw);
+  const mine = JSON.parse(localRaw);
+  const fields = [];
+  const kinds = [["characters", "Characters"], ["locations", "Locations"], ["concepts", "Concepts"]];
+  for (const [key, label] of kinds) {
+    const theirsList = theirs[key] || [];
+    const mineList = mine[key] || [];
+    const theirsById = new Map(theirsList.map((x) => [x.id, x]));
+    const mineById = new Map(mineList.map((x) => [x.id, x]));
+
+    const added = mineList.filter((x) => !theirsById.has(x.id));
+    const removed = theirsList.filter((x) => !mineById.has(x.id));
+    const changed = mineList.filter((x) => {
+      const t = theirsById.get(x.id);
+      return t && (t.name !== x.name || t.desc !== x.desc);
+    });
+    if (!added.length && !removed.length && !changed.length) continue;
+
+    const changedHtml = changed
+      .map((x) => {
+        const t = theirsById.get(x.id);
+        const nameHtml = wordDiffHtml(t.name, x.name);
+        const descHtml = t.desc !== x.desc ? `<div class="conflict-subline">${wordDiffHtml(t.desc, x.desc)}</div>` : "";
+        return `<div class="conflict-list-line"><strong>${nameHtml}</strong>${descHtml}</div>`;
+      })
+      .join("");
+    fields.push({
+      label,
+      html: listDiffHtml(removed.map((x) => x.name), added.map((x) => x.name)) + changedHtml,
+    });
+  }
+  return fields;
+}
+
+function summarizeConflict(conflict, localRaw) {
+  const remoteRaw = conflict.remoteContent || "";
+  if (conflict.kind === "scene") return summarizeScene(remoteRaw, localRaw);
+  if (conflict.kind === "manifest") return summarizeManifest(remoteRaw, localRaw);
+  return summarizeBible(remoteRaw, localRaw);
+}
+
+/** Fetches the local version of a conflicting file and renders a cleaner, field-by-field summary
+ *  against the remote copy already captured on the conflict record — what actually changed
+ *  (title, summary, text, to-dos, ...) instead of a raw line-by-line file diff, which buries the
+ *  real change under frontmatter noise (id/todos/updatedAt) and can flag a conflict as "changed"
+ *  even when only a timestamp differs. The byte-exact raw diff is still one click away. */
+async function loadSummaryInto(container, conflict) {
+  container.innerHTML = `<div class="diff-loading">Loading&hellip;</div>`;
   const localContent = await getLocalContentForConflict(conflict);
   if (localContent === null) {
     container.innerHTML = `<div class="diff-empty">No local copy exists anymore — it may have been deleted since this conflict was detected.</div>`;
     return;
   }
+
+  let fields;
+  try {
+    fields = summarizeConflict(conflict, localContent);
+  } catch {
+    fields = null;
+  }
+
+  const rawToggleHtml = `
+    <button class="tbtn-inline" id="rawDiffToggle-${conflict.key}">Show raw file diff</button>
+    <div class="conflict-diff" id="rawDiff-${conflict.key}" style="display:none"></div>
+  `;
+
+  if (!fields) {
+    container.innerHTML = `<div class="diff-empty">Couldn't compare these versions automatically.</div>${rawToggleHtml}`;
+  } else if (fields.length === 0) {
+    container.innerHTML = `
+      <div class="conflict-nochange">No meaningful differences — likely just sync bookkeeping (e.g. a timestamp). Either choice is safe to pick.</div>
+      ${rawToggleHtml}
+    `;
+  } else {
+    const fieldsHtml = fields
+      .map(
+        (f) => `
+      <div class="conflict-field">
+        <div class="conflict-field-label">${escapeHtml(f.label)}</div>
+        <div class="conflict-field-body${f.prose ? " conflict-field-body-prose" : ""}">${f.html}</div>
+      </div>`
+      )
+      .join("");
+    container.innerHTML = `
+      <div class="worddiff-legend">
+        <span class="worddiff-legend-item"><span class="worddiff-remove">struck</span> = GitHub's version</span>
+        <span class="worddiff-legend-item"><span class="worddiff-add">underlined</span> = yours (Keep Mine)</span>
+      </div>
+      ${fieldsHtml}
+      ${rawToggleHtml}
+    `;
+  }
+
+  const rawToggle = document.getElementById(`rawDiffToggle-${conflict.key}`);
+  rawToggle.onclick = async () => {
+    const rawEl = document.getElementById(`rawDiff-${conflict.key}`);
+    const isHidden = rawEl.style.display === "none";
+    rawEl.style.display = isHidden ? "block" : "none";
+    rawToggle.textContent = isHidden ? "Hide raw file diff" : "Show raw file diff";
+    if (isHidden && !rawEl.dataset.loaded) {
+      rawEl.dataset.loaded = "1";
+      loadDiffInto(rawEl, conflict, localContent);
+    }
+  };
+}
+
+/** Renders a line-by-line diff of the two raw files (frontmatter and all) — the byte-exact
+ *  fallback behind "Show raw file diff" for whoever wants to see everything. */
+function loadDiffInto(container, conflict, localContent) {
   const rows = diffLines(conflict.remoteContent || "", localContent);
   const linesHtml = rows
     .map(({ type, text }) => {

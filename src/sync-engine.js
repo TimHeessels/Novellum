@@ -79,7 +79,7 @@ export async function getSyncStatus() {
 
 /** Push then pull for one book, in one call — shared by the manual "Sync Now" button and the
  *  automatic background timer so they can't drift out of sync with each other's behavior. */
-export async function syncNow(bookId, { force = false } = {}) {
+async function syncNowInner(bookId, { force = false } = {}) {
   // A scene deleted (or replaced by an import) moments ago might still be sitting in IndexedDB
   // if its debounced local save hasn't landed yet — pushOne would then see a live row and push
   // an update instead of the deletion. Flushing first guarantees the outbox is drained against
@@ -89,6 +89,20 @@ export async function syncNow(bookId, { force = false } = {}) {
   const pullResult = bookId && !pushResult.paused ? await reconcileBook(bookId) : { pulled: 0, conflicts: 0 };
   if (!pushResult.paused) await patchGithubSettings({ lastSyncedAt: new Date().toISOString() });
   return { pushResult, pullResult };
+}
+
+// Every caller (the background timer, the manual "Sync Now" button, the boot-time sync) funnels
+// through this same chain so two syncs can never run concurrently. Without it, two overlapping
+// runs both flush the same in-memory `data` to IndexedDB from a stale read, then both try to
+// push the same scene — the second push's expected sha is already stale by the time it lands,
+// so GitHub rejects it as a conflict even though nothing actually differs but a timestamp.
+let syncChain = Promise.resolve();
+export function syncNow(bookId, opts) {
+  const result = syncChain.then(() => syncNowInner(bookId, opts));
+  // Swallow the error here so one failed sync doesn't wedge the chain for every sync after it —
+  // the caller of *this* call still sees the rejection via `result`, which is returned untouched.
+  syncChain = result.catch(() => {});
+  return result;
 }
 
 /* ---------------------------------------------------------------- */
