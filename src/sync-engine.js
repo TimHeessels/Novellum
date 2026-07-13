@@ -161,7 +161,9 @@ async function syncNowInner(bookId, { force = false } = {}) {
   // the same local state the user actually sees.
   await flushSaveNow();
   const pushResult = await drainOutbox(undefined, { force });
-  const pullResult = bookId && !pushResult.paused ? await reconcileBook(bookId) : { pulled: 0, conflicts: 0 };
+  const pullResult = bookId && !pushResult.paused
+    ? await reconcileBook(bookId, pushResult.pushedTargets)
+    : { pulled: 0, conflicts: 0 };
   if (!pushResult.paused) await patchGithubSettings({ lastSyncedAt: new Date().toISOString() });
   return { pushResult, pullResult };
 }
@@ -391,7 +393,7 @@ export async function drainOutbox(onProgress, { force = false } = {}) {
   if (!token || !owner || !repo) {
     // `paused: true` here too — this is just as much a "sync could not proceed" outcome as an
     // auth/rate-limit failure, and the caller only surfaces `pauseReason` when paused is true.
-    return { pushed: 0, conflicts: 0, paused: true, pauseReason: "GitHub isn't configured yet (see Settings)." };
+    return { pushed: 0, conflicts: 0, paused: true, pauseReason: "GitHub isn't configured yet (see Settings).", pushedTargets: new Set() };
   }
 
   const entries = await dbGetAll("outbox");
@@ -399,6 +401,12 @@ export async function drainOutbox(onProgress, { force = false } = {}) {
   let conflicts = 0;
   let paused = false;
   let pauseReason = null;
+  // Targets this call successfully pushed, so the immediately-following reconcileBook (see
+  // syncNowInner) can skip re-deriving their state from a fresh tree fetch — GitHub's git data
+  // endpoints (trees/blobs) can lag a moment behind a just-completed Contents API commit, and
+  // reconcileBook has no way to tell that lag apart from a genuine concurrent remote change. We
+  // already know the true post-push sha from the PUT response itself, so trust that instead.
+  const pushedTargets = new Set();
 
   for (const entry of entries) {
     if (paused) break;
@@ -408,6 +416,7 @@ export async function drainOutbox(onProgress, { force = false } = {}) {
       await pushOne(token, owner, repo, entry);
       await dbDelete("outbox", entry.key);
       pushed += 1;
+      pushedTargets.add(`${entry.kind}:${entry.targetId}`);
       if (onProgress) onProgress({ type: "pushed", entry });
     } catch (err) {
       if (err.type === "conflict") {
@@ -428,7 +437,7 @@ export async function drainOutbox(onProgress, { force = false } = {}) {
     }
   }
 
-  return { pushed, conflicts, paused, pauseReason };
+  return { pushed, conflicts, paused, pauseReason, pushedTargets };
 }
 
 /* ---------------------------------------------------------------- */
@@ -504,8 +513,13 @@ async function applyRemoteBible(bookId, remoteBible) {
  * GitHub and we have no pending local edit to it, fast-forward local state to match. If we
  * *do* have a pending local edit and remote also changed, record a conflict — same shape and
  * resolution path (Keep Mine / Use GitHub's) as a conflict discovered while pushing.
+ *
+ * `justPushed` (a `"kind:targetId"` Set, from drainOutbox's return value) marks targets this
+ * same sync cycle already pushed successfully — skipped here even if the tree read below still
+ * shows their pre-push sha, since that's GitHub's git data endpoints lagging the Contents API
+ * commit we just made rather than a real independent remote change (see drainOutbox).
  */
-export async function reconcileBook(bookId) {
+export async function reconcileBook(bookId, justPushed = new Set()) {
   const { token, owner, repo, defaultBranch } = await getGithubSettings();
   if (!token || !owner || !repo) return { pulled: 0, conflicts: 0, skipped: true };
 
@@ -528,7 +542,7 @@ export async function reconcileBook(bookId) {
 
   const manifestSha = remoteByPath.get(`${prefix}manifest.json`);
   const meta = (await dbGet("manifestMeta", bookId)) || { bookId };
-  if (manifestSha && manifestSha !== meta.manifestSha) {
+  if (manifestSha && manifestSha !== meta.manifestSha && !justPushed.has(`manifest:${bookId}`)) {
     if (dirtyKeys.has(`manifest:${bookId}`)) {
       await recordConflict(token, owner, repo, { key: outboxKey(bookId, "manifest", bookId), bookId, kind: "manifest", targetId: bookId });
       conflicts += 1;
@@ -542,7 +556,7 @@ export async function reconcileBook(bookId) {
 
   const bibleSha = remoteByPath.get(`${prefix}bible.json`);
   const meta2 = (await dbGet("manifestMeta", bookId)) || { bookId };
-  if (bibleSha && bibleSha !== meta2.bibleSha) {
+  if (bibleSha && bibleSha !== meta2.bibleSha && !justPushed.has(`bible:${bookId}`)) {
     if (dirtyKeys.has(`bible:${bookId}`)) {
       await recordConflict(token, owner, repo, { key: outboxKey(bookId, "bible", bookId), bookId, kind: "bible", targetId: bookId });
       conflicts += 1;
@@ -565,7 +579,7 @@ export async function reconcileBook(bookId) {
     const path = `${prefix}scenes/${sc.id}.md`;
     const remoteSha = remoteByPath.get(path);
     const knownSha = syncById.get(sc.id)?.remoteSha;
-    if (!remoteSha || remoteSha === knownSha) continue;
+    if (!remoteSha || remoteSha === knownSha || justPushed.has(`scene:${sc.id}`)) continue;
     if (dirtyKeys.has(`scene:${sc.id}`)) {
       await recordConflict(token, owner, repo, { key: outboxKey(bookId, "scene", sc.id), bookId, kind: "scene", targetId: sc.id });
       conflicts += 1;
