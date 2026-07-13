@@ -2,9 +2,9 @@
 
 import { escapeHtml, formatRelativeTime, markdownToScene } from "./model.js";
 import {
-  getGithubSettings, createRepoForVault, disconnectGithub,
+  getGithubSettings, disconnectGithub,
   listOutbox, listConflicts, syncNow, resolveConflictKeepMine, resolveConflictUseTheirs,
-  getLocalContentForConflict, connectExistingVaultRepo, listMyRepos, DEFAULT_VAULT_REPO_NAME,
+  getLocalContentForConflict, connectToRepo, isUsableVaultRepo,
 } from "./sync-engine.js";
 import { getActiveBookId, exportDataAsJson, importDataFromJson } from "./persistence.js";
 import { diffLines, diffWords } from "./diff.js";
@@ -15,6 +15,13 @@ export async function renderSettingsView(container, callbacks) {
   const { onBack, notifyBookDataChanged, onSyncStatusChanged } = callbacks;
   const [settings, outbox, conflicts] = await Promise.all([getGithubSettings(), listOutbox(), listConflicts()]);
   const isConnected = !!(settings.token && settings.owner && settings.repo);
+  // Re-checked on every render (not just at connect time) so if someone later adds unrelated
+  // content to the repo directly on GitHub, the warning shows up next time Settings is opened.
+  // Fails open (assume usable) on error — this is an advisory nudge, not a security boundary, and
+  // a transient network hiccup shouldn't scare someone with a false "wrong repo" warning.
+  const vaultLooksUsable = isConnected
+    ? await isUsableVaultRepo(settings.owner, settings.repo, settings.defaultBranch).catch(() => true)
+    : true;
 
   container.innerHTML = `
     <div class="settings-view">
@@ -24,7 +31,7 @@ export async function renderSettingsView(container, callbacks) {
       </div>
 
       ${isConnected
-        ? renderConnectedPhase(settings)
+        ? renderConnectedPhase(settings, vaultLooksUsable)
         : state.pendingOAuthVaultPick
           ? renderVaultPickPhase(state.pendingOAuthVaultPick)
           : renderSetupPhase()}
@@ -65,7 +72,7 @@ export async function renderSettingsView(container, callbacks) {
 
   document.getElementById("settingsBack").onclick = onBack;
 
-  // A "Sign in with GitHub" redirect may have just completed (see main.js) before this view's
+  // A "Connect GitHub" redirect may have just completed (see main.js) before this view's
   // first render — surface the result once here, then clear it so it doesn't reappear on the
   // next unrelated re-render.
   if (state.oauthLoginError) {
@@ -82,59 +89,20 @@ export async function renderSettingsView(container, callbacks) {
     };
   }
 
-  const createVaultBtn = document.getElementById("settingsCreateVault");
-  if (createVaultBtn) {
-    createVaultBtn.onclick = async () => {
-      createVaultBtn.disabled = true;
-      setStatus("settingsStatus", "Creating vault…", false);
+  const connectGrantedBtn = document.getElementById("settingsConnectGrantedRepo");
+  if (connectGrantedBtn) {
+    connectGrantedBtn.onclick = async () => {
+      const [owner, repo] = document.getElementById("settingsGrantedRepoSelect").value.split("/");
+      connectGrantedBtn.disabled = true;
+      setStatus("settingsStatus", "Connecting…", false);
       try {
-        await createRepoForVault(DEFAULT_VAULT_REPO_NAME);
+        await connectToRepo(owner, repo);
         state.pendingOAuthVaultPick = null;
         await renderSettingsView(container, callbacks);
       } catch (err) {
-        createVaultBtn.disabled = false;
+        connectGrantedBtn.disabled = false;
         setStatus("settingsStatus", `Failed: ${err.message}`, true);
       }
-    };
-  }
-
-  const pickExistingBtn = document.getElementById("settingsPickExistingRepo");
-  if (pickExistingBtn) {
-    pickExistingBtn.onclick = async () => {
-      pickExistingBtn.disabled = true;
-      const holder = document.getElementById("settingsExistingRepoPicker");
-      holder.style.display = "block";
-      holder.innerHTML = `<div class="settings-status">Loading your repos&hellip;</div>`;
-      let repos;
-      try {
-        repos = await listMyRepos();
-      } catch (err) {
-        holder.innerHTML = `<div class="settings-status error">Couldn't load repos: ${escapeHtml(err.message)}</div>`;
-        return;
-      }
-      if (repos.length === 0) {
-        holder.innerHTML = `<div class="settings-status">No repos found on this account.</div>`;
-        return;
-      }
-      holder.innerHTML = `
-        <select id="settingsExistingRepoSelect">
-          ${repos
-            .map((r) => `<option value="${escapeHtml(r.owner)}/${escapeHtml(r.repo)}">${escapeHtml(r.owner)}/${escapeHtml(r.repo)}${r.private ? "" : " (public)"}</option>`)
-            .join("")}
-        </select>
-        <button class="modal-btn done" id="settingsConnectExisting" style="margin-left:8px">Connect</button>
-      `;
-      document.getElementById("settingsConnectExisting").onclick = async () => {
-        const [owner, repo] = document.getElementById("settingsExistingRepoSelect").value.split("/");
-        setStatus("settingsStatus", "Checking repo…", false);
-        try {
-          await connectExistingVaultRepo(owner, repo);
-          state.pendingOAuthVaultPick = null;
-          await renderSettingsView(container, callbacks);
-        } catch (err) {
-          setStatus("settingsStatus", `Failed: ${err.message}`, true);
-        }
-      };
     };
   }
 
@@ -276,41 +244,46 @@ export async function renderSettingsView(container, callbacks) {
   });
 }
 
-/** Shown right after a "Sign in with GitHub" redirect when the account's default vault repo
- *  either doesn't exist yet or exists but failed the "is this actually a Novellum vault" check
- *  (state.pendingOAuthVaultPick, set in main.js) — an explicit choice instead of guessing. */
-function renderVaultPickPhase({ login, blockedReason }) {
-  const explanation = blockedReason
-    ? escapeHtml(blockedReason)
-    : `No <strong>${escapeHtml(DEFAULT_VAULT_REPO_NAME)}</strong> repo found for this account yet.`;
+/** Shown right after a "Connect GitHub" redirect when the install grant covered more than one
+ *  repo (state.pendingOAuthVaultPick, set in main.js) — Novellum only tracks one vault at a time,
+ *  so this is where the user picks which of the granted repos that should be. */
+function renderVaultPickPhase({ repos }) {
   return `
     <div class="settings-section">
       <div class="section-label">Choose your vault</div>
       <div class="settings-status" style="margin:0 0 10px">
-        Signed in as <strong>${escapeHtml(login)}</strong>. ${explanation}
-        Create a new vault, or connect an existing repository instead.
+        GitHub granted access to ${repos.length} repositories. Choose which one Novellum should use
+        as the manuscript vault.
       </div>
-      <div class="settings-actions-row">
-        <button class="modal-btn done" id="settingsCreateVault">Create &ldquo;${escapeHtml(DEFAULT_VAULT_REPO_NAME)}&rdquo;</button>
-        <button class="tbtn" id="settingsPickExistingRepo">Choose an existing repo&hellip;</button>
+      <select id="settingsGrantedRepoSelect">
+        ${repos
+          .map((r) => `<option value="${escapeHtml(r.owner)}/${escapeHtml(r.repo)}">${escapeHtml(r.owner)}/${escapeHtml(r.repo)}${r.private ? "" : " (public)"}</option>`)
+          .join("")}
+      </select>
+      <div class="settings-actions-row" style="margin-top:10px">
+        <button class="modal-btn done" id="settingsConnectGrantedRepo">Connect</button>
       </div>
-      <div id="settingsExistingRepoPicker" style="display:none;margin-top:10px"></div>
       <div id="settingsStatus" class="settings-status"></div>
     </div>
   `;
 }
 
-/** Not-yet-connected phase: the only way to connect is "Sign in with GitHub" — it detects the
- *  account and finds/creates the vault repo automatically, so there's no token or repo name to
- *  fill in by hand. */
+/** Not-yet-connected phase: the only way to connect is through GitHub's own install picker,
+ *  reached via the Novellum GitHub App — the user chooses exactly which repo(s) to grant there,
+ *  so there's no token, owner, or repo name to fill in here, and no broader access than that
+ *  choice. Requires the repo to already exist (GitHub App tokens can't create repos), so this
+ *  points the user at a plain "create a repo" link first if they don't have one yet. */
 function renderSetupPhase() {
   return `
     <div class="settings-section">
       <div class="section-label">Connect GitHub</div>
       <div class="settings-status" style="margin:0 0 10px">
-        Sign in with your GitHub account to sync your books!
+        If you don't already have a repo for your manuscript, <a class="settings-link" target="_blank"
+        rel="noopener" href="https://github.com/new">create one on GitHub first &rarr;</a> (any name,
+        private recommended). Then click below and select that repo when GitHub asks — Novellum only
+        ever gets access to the repo(s) you explicitly choose there, nothing else on your account.
       </div>
-      <button class="modal-btn done" id="settingsOAuthLogin">Sign in with GitHub</button>
+      <button class="modal-btn done" id="settingsOAuthLogin">Connect GitHub</button>
       <div id="settingsStatus" class="settings-status"></div>
     </div>
   `;
@@ -318,8 +291,11 @@ function renderSetupPhase() {
 
 /** Connected phase: a clear "which repo" banner plus the one way out — Disconnect — instead
  *  of re-showing the raw token/owner/repo form (see settings-ui redesign: a fresh setup should
- *  never look ambiguous about whether a repo is already wired up). */
-function renderConnectedPhase(settings) {
+ *  never look ambiguous about whether a repo is already wired up). Shows a non-blocking warning
+ *  when the connected repo doesn't look like a usable vault (see isUsableVaultRepo) — the user
+ *  already deliberately granted access to it in GitHub's own picker, so this nudges rather than
+ *  blocks, pointing at GitHub's installation settings to fix it. */
+function renderConnectedPhase(settings, vaultLooksUsable) {
   return `
     <div class="settings-section">
       <div class="section-label">Repository</div>
@@ -327,6 +303,14 @@ function renderConnectedPhase(settings) {
         <span class="repo-connected-dot"></span>
         Connected to <strong>${escapeHtml(settings.owner)}/${escapeHtml(settings.repo)}</strong>
       </div>
+      ${vaultLooksUsable ? "" : `
+        <div class="settings-status error" style="margin-top:8px">
+          This repo already has other content and doesn't look like a Novellum vault — you may have
+          selected the wrong one. <a class="settings-link" target="_blank" rel="noopener"
+          href="https://github.com/settings/installations">Manage repository access on GitHub &rarr;</a>
+          to grant a different repo, then Disconnect and reconnect below.
+        </div>
+      `}
       <div class="settings-actions-row" style="margin-top:10px">
         <button class="tbtn" id="settingsDisconnect">Disconnect&hellip;</button>
       </div>

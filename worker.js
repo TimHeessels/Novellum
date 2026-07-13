@@ -1,8 +1,8 @@
 "use strict";
 
-/* Serves the static app for every normal request, and handles one extra route: the GitHub
- * OAuth code->token exchange, which needs GITHUB_CLIENT_SECRET (a Cloudflare-encrypted secret
- * that must never reach the browser, so the static/client-side app can't do this step itself). */
+/* Serves the static app for every normal request, and handles one extra route: the GitHub App
+ * user-authorization code->token exchange, which needs GITHUB_CLIENT_SECRET (a Cloudflare-
+ * encrypted secret that must never reach the browser, so the static app can't do this itself). */
 
 export default {
   async fetch(request, env) {
@@ -10,23 +10,15 @@ export default {
     if (url.pathname === "/api/auth/callback") {
       return handleOAuthCallback(url, env);
     }
-    // TEMPORARY — remove once the "client_id and/or client_secret passed are incorrect" issue is
-    // resolved. Reports whether GITHUB_CLIENT_SECRET is actually bound and its length, never the
-    // value itself, so we can tell "not deployed to this Worker" apart from "wrong value" without
-    // ever exposing the secret.
-    if (url.pathname === "/api/auth/debug") {
-      return Response.json({
-        clientId: env.GITHUB_CLIENT_ID || null,
-        hasSecret: !!env.GITHUB_CLIENT_SECRET,
-        secretLength: (env.GITHUB_CLIENT_SECRET || "").length,
-      });
-    }
     return env.ASSETS.fetch(request);
   },
 };
 
 async function handleOAuthCallback(url, env) {
   const code = url.searchParams.get("code");
+  // installation_id identifies which repos GitHub's own install picker just granted — the
+  // client uses it to look those up (see listInstallationRepos) rather than us needing to.
+  const installationId = url.searchParams.get("installation_id") || "";
   // Echoed straight back to github-oauth.js unchecked — this worker has no session of its own to
   // validate it against. The client is the one that generated it and is the one that verifies it
   // matches before trusting the token (see consumePendingOAuthResult), so round-tripping it here
@@ -36,6 +28,7 @@ async function handleOAuthCallback(url, env) {
   const redirectWith = (params) => {
     const frag = new URLSearchParams(params);
     if (state) frag.set("state", state);
+    if (installationId) frag.set("installation_id", installationId);
     return Response.redirect(`${url.origin}/#${frag.toString()}`, 302);
   };
 

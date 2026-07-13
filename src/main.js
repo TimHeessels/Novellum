@@ -4,7 +4,7 @@ import { initApp, render, refreshSyncStatusUI } from "./ui.js";
 import { data, getSceneAndChapter } from "./model.js";
 import { state } from "./state.js";
 import { DEFAULT_BOOK_ID, listBooks, loadBook, setActiveBookId, persistNow, flushSaveNow, loadUiPrefs } from "./persistence.js";
-import { ensureBookBootstrapped, syncNow, beginOAuthLogin, connectExistingVaultRepo, DEFAULT_VAULT_REPO_NAME } from "./sync-engine.js";
+import { ensureBookBootstrapped, syncNow, completeGithubAppLogin } from "./sync-engine.js";
 import { consumePendingOAuthResult } from "./github-oauth.js";
 
 const AUTO_SYNC_INTERVAL_MS = 60000;
@@ -27,38 +27,34 @@ function showFatalError(err) {
     </div>`;
 }
 
-/** Finishes a "Sign in with GitHub" redirect if this page load is one — the token/error worker.js
- *  left in the URL fragment. Runs before anything else in boot() so the settings view (restored
- *  from uiPrefs, since that's where the user was when they clicked the button) already reflects
- *  the outcome by the time it first renders.
+/** Finishes a "Connect GitHub" redirect if this page load is one — the token/installation/error
+ *  worker.js left in the URL fragment after the user picked repos in GitHub's own install picker.
+ *  Runs before anything else in boot() so the settings view (restored from uiPrefs, since that's
+ *  where the user was when they clicked the button) already reflects the outcome by the time it
+ *  first renders.
  *
- *  Only auto-connects when this account's default vault already exists AND passes the "is this
- *  actually a Novellum vault" check — first-time sign-in (no vault yet) or a name collision with
- *  an unrelated repo both fall through to state.pendingOAuthVaultPick, which settings-ui.js
- *  renders as an explicit create-or-choose prompt instead of guessing. */
+ *  Auto-connects when the installation was granted exactly one repo (the expected case, since
+ *  users are guided to select just their vault repo). If more than one was granted,
+ *  state.pendingOAuthVaultPick holds the list for settings-ui.js to render as an explicit choice
+ *  instead of guessing which one is "the" vault. */
 async function consumeOAuthRedirectIfAny() {
-  let token;
+  let result;
   try {
-    token = consumePendingOAuthResult();
+    result = consumePendingOAuthResult();
   } catch (err) {
     state.oauthLoginError = err.message;
     return;
   }
-  if (!token) return;
+  if (!result) return;
 
   try {
-    const { login } = await beginOAuthLogin(token);
-    try {
-      await connectExistingVaultRepo(login, DEFAULT_VAULT_REPO_NAME);
-    } catch (err) {
-      // A real connection problem (bad token scope, rate limit, network) is a login failure, not
-      // a "pick a vault" situation — only 'notfound' and the usability check land on the picker.
-      if (err.type && err.type !== "notfound") throw err;
-      state.pendingOAuthVaultPick = { login, blockedReason: err.type === "notfound" ? null : err.message };
+    const outcome = await completeGithubAppLogin(result.token, result.installationId);
+    if (outcome.needsPick) {
+      state.pendingOAuthVaultPick = { repos: outcome.needsPick };
       state.view = "settings";
     }
   } catch (err) {
-    state.oauthLoginError = `Signed in, but couldn't verify the account: ${err.message}`;
+    state.oauthLoginError = `Signed in, but couldn't connect a repo: ${err.message}`;
   }
 }
 

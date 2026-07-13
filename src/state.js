@@ -30,9 +30,8 @@ export const state = {
   // Set once, right after a "Sign in with GitHub" redirect lands back on boot() — shown on the
   // settings view's next render, then cleared, rather than persisted.
   oauthLoginError: null,
-  // Set after sign-in when the account's default vault repo doesn't exist yet, or exists but
-  // isn't a usable vault: { login, blockedReason }. blockedReason is null for "doesn't exist yet"
-  // (nothing to explain) and a message for "exists but has other content". Settings renders this
-  // as a create-or-choose prompt instead of guessing; cleared once the user resolves it.
+  // Set after "Connect GitHub" when the install grant covered more than one repo: { repos }.
+  // Settings renders this as an explicit "which one is the vault" prompt instead of guessing;
+  // cleared once the user picks one.
   pendingOAuthVaultPick: null,
 };

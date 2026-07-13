@@ -24,10 +24,6 @@ async function patchGithubSettings(patch) {
   await dbPut("settings", { ...existing, key: SETTINGS_KEY, ...patch });
 }
 
-export async function saveGithubSettings({ token, owner, repo }) {
-  await patchGithubSettings({ token, owner, repo });
-}
-
 /** Fully decouples this device from whatever repo it was connected to: clears the saved
  *  token/owner/repo plus every piece of repo-specific sync bookkeeping (shas, conflicts).
  *  The manuscript itself is untouched — reconnecting (to the same repo or a different one)
@@ -43,35 +39,17 @@ export async function disconnectGithub() {
   ]);
 }
 
-export async function testConnection() {
-  const { token, owner, repo } = await getGithubSettings();
-  if (!token) throw new Error("No token set.");
-  const login = await gh.testToken(token);
-  if (!owner || !repo) return { login, repoOk: false };
-  const info = await gh.testRepoAccess(token, owner, repo);
-  await patchGithubSettings({ defaultBranch: info.defaultBranch });
-  return { login, repoOk: true, defaultBranch: info.defaultBranch };
-}
-
-export async function createRepoForVault(name) {
-  const { token } = await getGithubSettings();
-  if (!token) throw new Error("No token set.");
-  const { owner, repo } = await gh.createRepo(token, name);
-  const info = await gh.testRepoAccess(token, owner, repo);
-  await patchGithubSettings({ owner, repo, defaultBranch: info.defaultBranch });
-  return { owner, repo };
-}
-
-export const DEFAULT_VAULT_REPO_NAME = "novellum-vault";
-
-// Root-level files GitHub (or a human) commonly adds to an otherwise-empty repo — safe to adopt
-// as a fresh vault without asking, since there's nothing real to clobber.
+// Root-level files GitHub (or a human) commonly adds to an otherwise-empty repo — safe to treat
+// as an empty vault without warning, since there's nothing real to clobber.
 const VAULT_SAFE_ROOT_ENTRIES = new Set(["readme.md", "license", "license.md", ".gitignore"]);
 
-/** A repo is safe to sync a manuscript into if it's empty, only has the boilerplate above, or
- *  already has this app's own books/ folder (a previously-used vault) — anything else risks
- *  silently mixing manuscript files into an unrelated project. */
-async function isUsableVaultRepo(token, owner, repo, defaultBranch) {
+/** A repo looks like a safe manuscript vault if it's empty, only has the boilerplate above, or
+ *  already has this app's own books/ folder (a previously-used vault) — anything else suggests
+ *  the wrong repo got selected in GitHub's install picker. This never blocks connecting (the user
+ *  already made a deliberate choice in GitHub's own UI by this point) — callers use it to decide
+ *  whether to show a "you may have picked the wrong repo" warning. */
+export async function isUsableVaultRepo(owner, repo, defaultBranch) {
+  const { token } = await getGithubSettings();
   const { tree } = await gh.getTree(token, owner, repo, defaultBranch);
   if (tree.length === 0) return true;
   if (tree.some((e) => e.path === "books" || e.path.startsWith("books/"))) return true;
@@ -79,37 +57,34 @@ async function isUsableVaultRepo(token, owner, repo, defaultBranch) {
   return rootEntries.every((e) => VAULT_SAFE_ROOT_ENTRIES.has(e.path.toLowerCase()));
 }
 
-/** First step of "Sign in with GitHub": saves the token and identifies the account. Deliberately
- *  does not pick a repo — the settings UI decides next, based on whether this account's default
- *  vault already exists (see connectExistingVaultRepo / createRepoForVault). */
-export async function beginOAuthLogin(token) {
-  await patchGithubSettings({ token, owner: "", repo: "" });
-  const login = await gh.testToken(token);
-  return { login };
-}
-
-/** Connects to an existing repo as the vault, after confirming it's actually safe to sync a
- *  manuscript into. Throws the underlying GitHubError('notfound', ...) if the repo doesn't
- *  exist, or a plain Error with a user-facing message if it exists but isn't a usable vault. */
-export async function connectExistingVaultRepo(owner, repo) {
+/** Connects to one of the repos this GitHub App installation was granted, saving it as the
+ *  active vault. Doesn't run the usability check itself — see isUsableVaultRepo, which callers
+ *  can re-run afterward to warn without blocking. */
+export async function connectToRepo(owner, repo) {
   const { token } = await getGithubSettings();
   if (!token) throw new Error("No token set.");
   const info = await gh.testRepoAccess(token, owner, repo);
-  if (!(await isUsableVaultRepo(token, owner, repo, info.defaultBranch))) {
-    throw new Error(
-      `${owner}/${repo} already has other content and doesn't look like a Novellum vault — ` +
-      `pick an empty repo, or one with a "books" folder from a previous vault.`
-    );
-  }
   await patchGithubSettings({ owner, repo, defaultBranch: info.defaultBranch });
   return { owner, repo };
 }
 
-/** The signed-in account's own repos, for the "choose an existing repo" vault picker. */
-export async function listMyRepos() {
-  const { token } = await getGithubSettings();
-  if (!token) throw new Error("No token set.");
-  return gh.listUserRepos(token);
+/** Completes "Connect GitHub" right after the install-picker redirect: saves the token, then
+ *  looks up exactly which repo(s) this installation was granted (never anything broader — that's
+ *  enforced by GitHub itself, not by anything we do here). Returns { connected } if exactly one
+ *  repo was granted (the common case — already saved as the active vault), or { needsPick } with
+ *  the list if more than one was granted, for the settings UI to ask which one to use. Throws if
+ *  zero repos were granted. */
+export async function completeGithubAppLogin(token, installationId) {
+  await patchGithubSettings({ token, owner: "", repo: "" });
+  const repos = await gh.listInstallationRepos(token, installationId);
+  if (repos.length === 0) {
+    throw new Error("No repository access was granted — reinstall the GitHub App and select a repository.");
+  }
+  if (repos.length === 1) {
+    const connected = await connectToRepo(repos[0].owner, repos[0].repo);
+    return { connected };
+  }
+  return { needsPick: repos };
 }
 
 /* ---------------------------------------------------------------- */

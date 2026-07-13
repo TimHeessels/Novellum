@@ -82,21 +82,13 @@ export async function testRepoAccess(token, owner, repo) {
   return { defaultBranch: data.default_branch };
 }
 
-/** The signed-in user's own repos (not orgs they belong to) — used to populate the "choose an
- *  existing repo" vault picker. */
-export async function listUserRepos(token) {
-  const { data } = await request(token, "GET", "/user/repos?per_page=100&sort=updated&affiliation=owner");
-  return (data || []).map((r) => ({ owner: r.owner.login, repo: r.name, private: r.private }));
-}
-
-export async function createRepo(token, name) {
-  const { data } = await request(token, "POST", "/user/repos", {
-    name,
-    private: true,
-    auto_init: true,
-    description: "Novellum manuscript vault",
-  });
-  return { owner: data.owner.login, repo: data.name };
+/** The repos the user granted this GitHub App installation access to — set by GitHub's own
+ *  install picker ("Only select repositories"), not anything we ask for. Usually exactly one,
+ *  since users are guided to select just their vault repo, but a user can grant more. */
+export async function listInstallationRepos(token, installationId) {
+  const { data } = await request(token, "GET", `/user/installations/${installationId}/repositories?per_page=100`);
+  const repositories = data?.repositories || [];
+  return repositories.map((r) => ({ owner: r.owner.login, repo: r.name, private: r.private }));
 }
 
 /** Returns { content, sha } or null if the file doesn't exist yet. */
