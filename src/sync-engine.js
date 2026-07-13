@@ -648,3 +648,160 @@ export async function resolveAllConflicts(strategy) {
   }
   return { count: conflicts.length, bookIds: [...bookIds] };
 }
+
+/* ---------------------------------------------------------------- */
+/* History browsing & restore-to-a-point-in-time                     */
+/* Every push is its own commit (see pushOne), so the connected repo */
+/* already holds the full history of every scene/manifest/bible for  */
+/* a book — this just exposes it: list past commits, preview what    */
+/* differs from the current state, and restore by applying a past    */
+/* snapshot locally and pushing it forward as new commits (nothing   */
+/* in git history is rewritten or deleted).                          */
+/* ---------------------------------------------------------------- */
+
+/** Commits touching this book's folder, most recent first. */
+export async function listBookHistory(bookId, { perPage = 25, page = 1 } = {}) {
+  const { token, owner, repo, defaultBranch } = await getGithubSettings();
+  if (!token || !owner || !repo) return [];
+  return gh.listCommits(token, owner, repo, `books/${bookId}`, defaultBranch || "main", { perPage, page });
+}
+
+/** A book is only safe to browse/restore history for once it's fully synced — with a pending
+ *  push or an unresolved conflict, "current" is ambiguous (the local edit, or what's on GitHub?),
+ *  and a restore would either silently drop the pending edit or fight the conflict-resolution
+ *  flow over the same target. */
+export async function isBookClean(bookId) {
+  const [outbox, conflicts] = await Promise.all([dbGetAll("outbox"), dbGetAll("conflicts")]);
+  return !outbox.some((e) => e.bookId === bookId) && !conflicts.some((c) => c.bookId === bookId);
+}
+
+/** Diffs the book's current (fully-synced) state against a historical commit — the data source
+ *  for the restore preview. Returns raw serialized strings in exactly the shape
+ *  summarizeManifest/summarizeBible/summarizeScene (settings-ui.js) already expect, so the
+ *  restore UI can reuse that diffing code unchanged. Only fetches blob content for paths that
+ *  actually differ between the two trees (sha comparison itself needs no network call) or exist
+ *  on just one side. */
+export async function previewRestore(bookId, commitSha) {
+  const { token, owner, repo, defaultBranch } = await getGithubSettings();
+  const [historicalByPath, currentByPath] = await Promise.all([
+    getBookRemoteTree(token, owner, repo, commitSha, bookId),
+    getBookRemoteTree(token, owner, repo, defaultBranch || "main", bookId),
+  ]);
+  const prefix = `books/${bookId}/`;
+  if (!historicalByPath.has(`${prefix}manifest.json`)) {
+    throw new Error("This point in time predates this book having a saved structure — pick a later one.");
+  }
+
+  async function fetchIfChanged(path) {
+    const historicalSha = historicalByPath.get(path);
+    const currentSha = currentByPath.get(path);
+    if (historicalSha === currentSha) return { changed: false, historicalRaw: null, currentRaw: null };
+    const [historicalRaw, currentRaw] = await Promise.all([
+      historicalSha ? gh.getBlob(token, owner, repo, historicalSha).then((b) => b.content) : null,
+      currentSha ? gh.getBlob(token, owner, repo, currentSha).then((b) => b.content) : null,
+    ]);
+    return { changed: true, historicalRaw, currentRaw };
+  }
+
+  const manifestDiff = await fetchIfChanged(`${prefix}manifest.json`);
+  const bibleDiff = await fetchIfChanged(`${prefix}bible.json`);
+
+  const scenePathPrefix = `${prefix}scenes/`;
+  const sceneIdFromPath = (path) => path.slice(scenePathPrefix.length, -".md".length);
+  const scenePaths = [...new Set([...historicalByPath.keys(), ...currentByPath.keys()])].filter(
+    (p) => p.startsWith(scenePathPrefix) && p.endsWith(".md")
+  );
+
+  const changedScenes = [];
+  for (const path of scenePaths) {
+    const diff = await fetchIfChanged(path);
+    if (!diff.changed) continue;
+    const title = (diff.currentRaw && markdownToScene(diff.currentRaw).title)
+      || (diff.historicalRaw && markdownToScene(diff.historicalRaw).title)
+      || "Untitled Scene";
+    changedScenes.push({ id: sceneIdFromPath(path), title, currentRaw: diff.currentRaw, historicalRaw: diff.historicalRaw });
+  }
+
+  return {
+    manifestChanged: manifestDiff.changed,
+    manifestCurrentRaw: manifestDiff.currentRaw,
+    manifestHistoricalRaw: manifestDiff.historicalRaw,
+    bibleChanged: bibleDiff.changed,
+    bibleCurrentRaw: bibleDiff.currentRaw,
+    bibleHistoricalRaw: bibleDiff.historicalRaw,
+    changedScenes,
+  };
+}
+
+/**
+ * Restores a book to how it looked at `commitSha`: applies that historical manifest/bible/scene
+ * content to local state and marks it all dirty so the caller's next push sends it to GitHub as
+ * new commits — a git-revert-style operation, nothing in history is rewritten or deleted. Only
+ * writes to IndexedDB; like resolveConflictUseTheirs/reconcileBook, callers are responsible for
+ * running this inside withSyncLock and refreshing in-memory `data` afterward.
+ */
+export async function restoreToCommit(bookId, commitSha) {
+  if (!(await isBookClean(bookId))) {
+    throw new Error("You have unsynced local changes — sync first before restoring.");
+  }
+
+  const { token, owner, repo } = await getGithubSettings();
+  const historicalByPath = await getBookRemoteTree(token, owner, repo, commitSha, bookId);
+  const prefix = `books/${bookId}/`;
+  const manifestSha = historicalByPath.get(`${prefix}manifest.json`);
+  if (!manifestSha) {
+    throw new Error("This point in time predates this book having a saved structure — pick a later one.");
+  }
+  const manifest = JSON.parse((await gh.getBlob(token, owner, repo, manifestSha)).content);
+
+  const bibleSha = historicalByPath.get(`${prefix}bible.json`);
+  const bible = bibleSha
+    ? JSON.parse((await gh.getBlob(token, owner, repo, bibleSha)).content)
+    : { characters: [], locations: [], concepts: [] };
+
+  const now = new Date().toISOString();
+  const keptSceneIds = new Set(manifest.chapters.flatMap((ch) => ch.sceneIds));
+
+  // Anything currently in this book but absent from the historical manifest is being restored
+  // away — delete it locally and enqueue its remote deletion too (same mechanism deleteScene/
+  // importManuscriptMarkdown in ui.js already use), so it doesn't linger as an orphaned file on
+  // GitHub once this is pushed.
+  const localScenes = await dbGetAllByIndex("scenes", "bookId", bookId);
+  for (const sc of localScenes) {
+    if (!keptSceneIds.has(sc.id)) {
+      await dbDelete("scenes", sc.id);
+      await enqueueSync("scene", sc.id, bookId);
+    }
+  }
+
+  const newChapterRows = [];
+  for (const [chIndex, ch] of manifest.chapters.entries()) {
+    newChapterRows.push({ id: ch.id, bookId, title: ch.title, order: chIndex, updatedAt: now });
+    for (const [scIndex, sceneId] of ch.sceneIds.entries()) {
+      const sha = historicalByPath.get(`${prefix}scenes/${sceneId}.md`);
+      if (!sha) continue;
+      const parsed = markdownToScene((await gh.getBlob(token, owner, repo, sha)).content);
+      await dbPut("scenes", {
+        id: sceneId, bookId, chapterId: ch.id, order: scIndex,
+        title: parsed.title, summary: parsed.summary, text: parsed.text, todos: parsed.todos,
+        updatedAt: parsed.updatedAt || now,
+      });
+      await enqueueSync("scene", sceneId, bookId);
+    }
+  }
+  await dbReplaceWhereIndex("chapters", "bookId", bookId, newChapterRows);
+  await applyRemoteBible(bookId, bible);
+
+  const bookRow = await dbGet("books", bookId);
+  if (bookRow && manifest.title && bookRow.title !== manifest.title) {
+    await dbPut("books", { ...bookRow, title: manifest.title, updatedAt: now });
+  }
+
+  await enqueueSync("manifest", bookId, bookId);
+  await enqueueSync("bible", bookId, bookId);
+
+  // Deliberately doesn't touch manifestMeta's shas: they still hold the pre-restore (current,
+  // fully-synced) shas, which is exactly the right "expected sha" for the push this triggers — if
+  // something else changed the remote in the meantime, that push naturally 409s into the ordinary
+  // conflict flow instead of silently clobbering it.
+}

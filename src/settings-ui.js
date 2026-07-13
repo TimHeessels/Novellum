@@ -5,6 +5,7 @@ import {
   getGithubSettings, disconnectGithub,
   listOutbox, listConflicts, syncNow, resolveConflictKeepMine, resolveConflictUseTheirs,
   getLocalContentForConflict, connectToRepo, isUsableVaultRepo, resolveAllConflicts, withSyncLock,
+  listBookHistory, isBookClean, previewRestore, restoreToCommit,
 } from "./sync-engine.js";
 import { getActiveBookId, exportDataAsJson, importDataFromJson } from "./persistence.js";
 import { diffLines, diffWords } from "./diff.js";
@@ -46,6 +47,16 @@ export async function renderSettingsView(container, callbacks) {
         </div>
 
         ${conflicts.length > 0 ? renderConflictsSection(conflicts) : ""}
+
+        <div class="settings-section">
+          <div class="section-label">History</div>
+          <div class="settings-status" style="margin:0 0 8px">
+            Every sync creates a commit — browse past versions of this book and restore one if
+            something's missing.
+          </div>
+          <button class="tbtn" id="historyBrowse">Browse History</button>
+          <div id="historyPanel" style="margin-top:10px"></div>
+        </div>
       ` : ""}
 
       <div class="settings-section">
@@ -309,6 +320,28 @@ export async function renderSettingsView(container, callbacks) {
       };
     }
   });
+
+  const historyBrowseBtn = document.getElementById("historyBrowse");
+  if (historyBrowseBtn) {
+    historyBrowseBtn.onclick = async () => {
+      const originalLabel = historyBrowseBtn.textContent;
+      historyBrowseBtn.disabled = true;
+      historyBrowseBtn.textContent = "Loading…";
+      const bookId = getActiveBookId();
+      const panel = document.getElementById("historyPanel");
+      // History browsing needs an unambiguous "current" to diff against — with a pending push or
+      // an unresolved conflict, is "current" the local edit or what's on GitHub? Re-checkable by
+      // just clicking again once the pending state above is synced/resolved.
+      const clean = await isBookClean(bookId);
+      historyBrowseBtn.disabled = false;
+      historyBrowseBtn.textContent = originalLabel;
+      if (!clean) {
+        panel.innerHTML = `<div class="settings-status error">You have pending changes or unresolved conflicts for this book — sync or resolve those first (see above), then browse history.</div>`;
+        return;
+      }
+      await renderHistoryList(panel, bookId, container, callbacks, []);
+    };
+  }
 }
 
 /** Shown right after a "Connect GitHub" redirect when the install grant covered more than one
@@ -675,4 +708,206 @@ function loadDiffInto(container, conflict, localContent) {
     </div>
     <div class="diff-body">${linesHtml}</div>
   `;
+}
+
+/* ---------------------------------------------------------------- */
+/* History browsing & restore-to-a-point-in-time                     */
+/* ---------------------------------------------------------------- */
+
+const HISTORY_PAGE_SIZE = 25;
+
+function commitFirstLine(message) {
+  return (message || "").split("\n")[0];
+}
+
+/** Fetches one more page of commits, appends it to whatever's already loaded, and (re)renders the
+ *  whole list — commit rows reuse the same .conflict-row shape as the conflicts section, each
+ *  with its own lazy-loaded restore preview (loadRestorePreviewInto). */
+async function renderHistoryList(panel, bookId, container, callbacks, loadedCommits, page = 1) {
+  panel.innerHTML = `<div class="diff-loading">Loading&hellip;</div>`;
+  let newCommits;
+  try {
+    newCommits = await listBookHistory(bookId, { page, perPage: HISTORY_PAGE_SIZE });
+  } catch (err) {
+    panel.innerHTML = `<div class="diff-empty">Couldn't load history: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  const commits = [...loadedCommits, ...newCommits];
+  if (commits.length === 0) {
+    panel.innerHTML = `<div class="diff-empty">No history yet — sync at least once first.</div>`;
+    return;
+  }
+
+  const rowsHtml = commits
+    .map(
+      (c) => `
+    <div class="conflict-row">
+      <div class="conflict-row-head">
+        <div>
+          ${escapeHtml(commitFirstLine(c.message))}
+          <div class="settings-status" style="margin:2px 0 0">${formatRelativeTime(c.date)}</div>
+        </div>
+        <div class="conflict-actions">
+          <button class="tbtn" id="historyPreview-${c.sha}">Preview</button>
+        </div>
+      </div>
+      <div class="conflict-diff" id="historyDiff-${c.sha}" style="display:none"></div>
+    </div>`
+    )
+    .join("");
+  const hasMore = newCommits.length === HISTORY_PAGE_SIZE;
+  panel.innerHTML = `
+    ${rowsHtml}
+    ${hasMore ? `<button class="tbtn" id="historyLoadMore" style="margin-top:8px">Load more</button>` : ""}
+  `;
+
+  commits.forEach((c) => {
+    const previewBtn = document.getElementById(`historyPreview-${c.sha}`);
+    previewBtn.onclick = async () => {
+      const diffEl = document.getElementById(`historyDiff-${c.sha}`);
+      const isHidden = diffEl.style.display === "none";
+      diffEl.style.display = isHidden ? "block" : "none";
+      previewBtn.textContent = isHidden ? "Hide Preview" : "Preview";
+      if (isHidden && !diffEl.dataset.loaded) {
+        diffEl.dataset.loaded = "1";
+        await loadRestorePreviewInto(diffEl, bookId, c.sha, container, callbacks);
+      }
+    };
+  });
+
+  const loadMoreBtn = document.getElementById("historyLoadMore");
+  if (loadMoreBtn) {
+    loadMoreBtn.onclick = () => renderHistoryList(panel, bookId, container, callbacks, commits, page + 1);
+  }
+}
+
+/** Lazily loads and renders the "current vs. this historical commit" diff for one commit row,
+ *  reusing the exact same summarizeManifest/summarizeBible/summarizeScene field-diff rendering
+ *  the conflicts section uses — the only new thing here is the legend wording (historical vs.
+ *  current isn't "theirs vs. mine") and the restore confirm/action at the bottom. */
+async function loadRestorePreviewInto(diffEl, bookId, commitSha, container, callbacks) {
+  diffEl.innerHTML = `<div class="diff-loading">Loading&hellip;</div>`;
+  let preview;
+  try {
+    preview = await previewRestore(bookId, commitSha);
+  } catch (err) {
+    diffEl.innerHTML = `<div class="diff-empty">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  const fields = [];
+  if (preview.manifestChanged) fields.push(...summarizeManifest(preview.manifestHistoricalRaw, preview.manifestCurrentRaw));
+  if (preview.bibleChanged) fields.push(...summarizeBible(preview.bibleHistoricalRaw, preview.bibleCurrentRaw));
+
+  if (fields.length === 0 && preview.changedScenes.length === 0) {
+    diffEl.innerHTML = `<div class="conflict-nochange">No differences — this matches your current state.</div>`;
+    return;
+  }
+
+  const fieldHtml = (f) => `
+    <div class="conflict-field">
+      <div class="conflict-field-label">${escapeHtml(f.label)}</div>
+      <div class="conflict-field-body${f.prose ? " conflict-field-body-prose" : ""}">${f.html}</div>
+    </div>`;
+
+  const sceneRowsHtml = preview.changedScenes
+    .map((sc) => {
+      const hasFieldDiff = sc.currentRaw && sc.historicalRaw;
+      let sceneFields = [];
+      if (hasFieldDiff) {
+        try { sceneFields = summarizeScene(sc.historicalRaw, sc.currentRaw); } catch { sceneFields = []; }
+      }
+      const status = !sc.currentRaw ? "Would be restored (currently missing)"
+        : !sc.historicalRaw ? "Would be removed (added since this point)"
+        : null;
+      const sceneFieldsHtml = sceneFields.map(fieldHtml).join("");
+      return `
+    <div class="conflict-row">
+      <div class="conflict-row-head">
+        <div>
+          ${escapeHtml(sc.title)}
+          ${status ? `<div class="settings-status" style="margin:2px 0 0">${status}</div>` : ""}
+        </div>
+        ${sceneFieldsHtml ? `<div class="conflict-actions"><button class="tbtn" id="historySceneToggle-${sc.id}">View Changes</button></div>` : ""}
+      </div>
+      ${sceneFieldsHtml ? `<div class="conflict-diff" id="historySceneDiff-${sc.id}" style="display:none">${sceneFieldsHtml}</div>` : ""}
+    </div>`;
+    })
+    .join("");
+
+  diffEl.innerHTML = `
+    <div class="worddiff-legend">
+      <span class="worddiff-legend-item"><span class="worddiff-remove">struck</span> = only in this historical version (would come back)</span>
+      <span class="worddiff-legend-item"><span class="worddiff-add">underlined</span> = only in your current version (would be replaced)</span>
+    </div>
+    ${fields.map(fieldHtml).join("")}
+    ${preview.changedScenes.length ? `<div class="conflict-field-label" style="margin-top:14px">Scenes (${preview.changedScenes.length})</div>${sceneRowsHtml}` : ""}
+    <div class="settings-actions-row" style="margin-top:14px">
+      <button class="tbtn" id="historyRestoreToggle-${commitSha}">Restore This Version&hellip;</button>
+    </div>
+    <div id="historyRestoreConfirm-${commitSha}" class="settings-status" style="display:none;margin-top:8px">
+      This replaces the current chapters, scenes, and story bible with the version shown above.
+      Your current state isn't lost — it stays in history — but this overwrites what you see now
+      and pushes a new commit.
+      <div class="settings-actions-row" style="margin-top:8px">
+        <button class="modal-btn done" id="historyRestoreDo-${commitSha}">Yes, Restore</button>
+        <button class="tbtn" id="historyRestoreCancel-${commitSha}">Cancel</button>
+      </div>
+      <div id="historyRestoreError-${commitSha}" class="settings-status error"></div>
+    </div>
+  `;
+
+  preview.changedScenes.forEach((sc) => {
+    const toggleBtn = document.getElementById(`historySceneToggle-${sc.id}`);
+    if (!toggleBtn) return;
+    toggleBtn.onclick = () => {
+      const sceneDiffEl = document.getElementById(`historySceneDiff-${sc.id}`);
+      const isHidden = sceneDiffEl.style.display === "none";
+      sceneDiffEl.style.display = isHidden ? "block" : "none";
+      toggleBtn.textContent = isHidden ? "Hide Changes" : "View Changes";
+    };
+  });
+
+  const restoreToggleBtn = document.getElementById(`historyRestoreToggle-${commitSha}`);
+  const confirmRow = document.getElementById(`historyRestoreConfirm-${commitSha}`);
+  restoreToggleBtn.onclick = () => {
+    confirmRow.style.display = "block";
+    restoreToggleBtn.style.display = "none";
+  };
+  document.getElementById(`historyRestoreCancel-${commitSha}`).onclick = () => {
+    confirmRow.style.display = "none";
+    restoreToggleBtn.style.display = "";
+  };
+  document.getElementById(`historyRestoreDo-${commitSha}`).onclick = async () => {
+    const doBtn = document.getElementById(`historyRestoreDo-${commitSha}`);
+    doBtn.disabled = true;
+    doBtn.textContent = "Restoring…";
+    try {
+      // The restore write and the in-memory `data` refresh run inside withSyncLock together —
+      // same reason as everywhere else in this file: a background auto-sync tick landing in the
+      // gap between them would flush stale in-memory `data` over what restoreToCommit just wrote
+      // (see withSyncLock's comment in sync-engine.js).
+      await withSyncLock(async () => {
+        await restoreToCommit(bookId, commitSha);
+        if (callbacks.notifyBookDataChanged) await callbacks.notifyBookDataChanged(bookId);
+      });
+      // Separate, not-nested call — pushes the restored state forward as new commits.
+      const { pushResult } = await syncNow(bookId, { force: true });
+      await renderSettingsView(container, callbacks);
+      const statusEl = document.getElementById("syncStatus");
+      if (statusEl) {
+        statusEl.textContent = pushResult.paused
+          ? `Restored locally — couldn't push: ${pushResult.pauseReason}`
+          : `Restored and pushed ${pushResult.pushed} file(s).`;
+        statusEl.classList.toggle("error", !!pushResult.paused);
+      }
+      if (callbacks.onSyncStatusChanged) callbacks.onSyncStatusChanged();
+    } catch (err) {
+      doBtn.disabled = false;
+      doBtn.textContent = "Yes, Restore";
+      const errEl = document.getElementById(`historyRestoreError-${commitSha}`);
+      if (errEl) errEl.textContent = `Restore failed: ${err.message}`;
+    }
+  };
 }

@@ -132,4 +132,18 @@ export async function getBlob(token, owner, repo, sha) {
   return { content: fromBase64Utf8(data.content), sha: data.sha };
 }
 
+/** Commits that touched `path` (a file or folder), most recent first — the data source for the
+ *  "restore to a point in time" history browser. `ref` pins which branch's history to walk. */
+export async function listCommits(token, owner, repo, path, ref, { perPage = 25, page = 1 } = {}) {
+  const { data } = await request(
+    token, "GET",
+    `/repos/${owner}/${repo}/commits?path=${encodeURIComponent(path)}&sha=${encodeURIComponent(ref)}&per_page=${perPage}&page=${page}`
+  );
+  return (data || []).map((c) => ({
+    sha: c.sha,
+    message: c.commit.message,
+    date: c.commit.author?.date || c.commit.committer?.date,
+  }));
+}
+
 export { GitHubError };
