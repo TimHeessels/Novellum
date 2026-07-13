@@ -237,7 +237,7 @@ button{font-family:inherit}
 .panel-collapse-btn:hover{background:var(--hover-bg-2);color:oklch(0.85 0.01 75)}
 
 .book-tree-title{
-  font:700 13.5px 'Lora',serif;padding:6px 8px;margin:0 0 6px;color:var(--text-strong);
+  font:700 13.5px 'Lora',serif;padding:6px 8px;margin:0 0 6px;color:var(--text-strong);cursor:default;
 }
 
 .chapter-block{margin-bottom:2px}
@@ -281,7 +281,7 @@ button{font-family:inherit}
 .center-panel{flex:1;min-width:0;padding:44px 60px;overflow:auto}
 .scene-eyebrow{
   font:500 11.5px 'Manrope';letter-spacing:.03em;color:var(--text-muted);margin:0 auto 20px;
-  max-width:660px;padding:4px 8px;box-sizing:border-box;
+  max-width:660px;padding:4px 8px;box-sizing:border-box;cursor:default;
 }
 .scene-eyebrow.active{color:var(--text-strong)}
 .scene-eyebrow.active::before{content:"";display:inline-block;width:3px;height:0.85em;background:var(--accent);margin-right:9px;vertical-align:-0.05em;border-radius:1px}
@@ -290,7 +290,7 @@ button{font-family:inherit}
   display:flex;align-items:center;margin:0 -60px 0;padding:0 60px;border-bottom:1px solid var(--border);
 }
 .chapter-sticky .col{max-width:660px;margin:0 auto;width:100%;display:flex;flex-direction:column;gap:3px}
-.chapter-sticky .chapter-num{font:700 20px 'Lora',serif;color:var(--text-strong);line-height:1.15}
+.chapter-sticky .chapter-num{font:700 20px 'Lora',serif;color:var(--text-strong);line-height:1.15;cursor:default}
 .chapter-sticky .chapter-title-text{
   font:500 15px 'Lora',serif;color:var(--text-dim);line-height:1.2;
   outline:none;cursor:text;border-radius:4px;padding:1px 4px;margin:-1px -4px;display:inline-block;
@@ -301,11 +301,11 @@ button{font-family:inherit}
 }
 .scene-sticky .col{
   display:block;font:500 11.5px 'Manrope';letter-spacing:.03em;color:var(--text-muted);max-width:660px;margin:0 auto;
-  padding:0 8px;box-sizing:border-box;
+  padding:0 8px;box-sizing:border-box;cursor:default;
 }
 .scene-sticky.active .col{color:var(--text-strong)}
 .scene-sticky.active .col::before{content:"";display:inline-block;width:3px;height:0.85em;background:var(--accent);margin-right:9px;vertical-align:-0.05em;border-radius:1px}
-.doc-title{font:600 20px 'Lora',serif;color:var(--text-strong);margin-bottom:22px}
+.doc-title{font:600 20px 'Lora',serif;color:var(--text-strong);margin-bottom:22px;cursor:default}
 
 .manuscript-text{
   font:400 18px/1.85 'Lora',serif;max-width:660px;color:oklch(0.89 0.008 75);
@@ -320,7 +320,7 @@ button{font-family:inherit}
   max-width:660px;margin:0 auto 22px;padding:0 8px;box-sizing:border-box;
   display:flex;flex-direction:column;gap:3px;
 }
-.chapter-heading-inline .chapter-num{font:700 20px 'Lora',serif;color:var(--text-strong);line-height:1.15}
+.chapter-heading-inline .chapter-num{font:700 20px 'Lora',serif;color:var(--text-strong);line-height:1.15;cursor:default}
 .chapter-heading-inline .chapter-title-text{
   font:500 15px 'Lora',serif;color:var(--text-dim);line-height:1.2;
   outline:none;cursor:text;border-radius:4px;padding:1px 4px;margin:-1px -4px;display:inline-block;
@@ -332,17 +332,15 @@ button{font-family:inherit}
 /* Right panel */
 .right-panel{flex:none;padding:20px;overflow:auto}
 .right-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
-.right-label{font:600 10.5px 'Manrope';text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)}
-.chapter-title-heading{font:600 11px 'Manrope';text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:4px}
-.scene-title-heading{font:600 15px 'Lora',serif;color:var(--text-strong);margin-bottom:18px}
-.section-label{font:600 10.5px 'Manrope';text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:9px}
+.right-label{font:600 10.5px 'Manrope';text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);cursor:default}
+.section-label{font:600 10.5px 'Manrope';text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:9px;cursor:default}
 .summary-block{position:relative;margin-bottom:22px}
 .summary-text{
   font-size:13px;line-height:1.65;color:oklch(0.85 0.008 75);cursor:text;
   outline:none;border-radius:5px;margin:-4px;padding:4px;min-height:1.65em;
 }
 .summary-text:hover, .summary-text:focus{background:var(--hover-bg)}
-.no-scene{color:var(--text-mutedmore);font-size:13px;font-style:italic}
+.no-scene{color:var(--text-mutedmore);font-size:13px;font-style:italic;cursor:default}
 
 .todo-row{display:flex;gap:9px;align-items:center;padding:5px 0;font-size:13px;color:var(--text)}
 .todo-row.done{color:oklch(0.50 0.008 75)}

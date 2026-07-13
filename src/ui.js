@@ -1179,13 +1179,13 @@ function chapterHeadingInlineHtml(ch) {
   return `<div class="chapter-heading-inline"><span class="chapter-num">Chapter ${chapterNumber(ch)}</span><span class="chapter-title-text" contenteditable="true" data-chapter-id="${ch.id}"></span></div>`;
 }
 
-/** Read-only banner content — deliberately not contenteditable/data-chapter-id, since
- *  #fullChapterBanner's whole innerHTML gets replaced on every scroll-driven chapter change
- *  (see syncFullChapterBanner); making it editable would blow away the user's cursor mid-edit
- *  the moment an "input" event fired. Editing a chapter's title happens via its lone
- *  .chapter-sticky in Chapter mode instead. */
+/** Editable via the same data-chapter-id/contenteditable wiring as chapterStickyInner — the
+ *  first chapter's inline heading is deliberately skipped (see chaptersHtml below), so this
+ *  banner is the only place its title can be renamed while in Full-manuscript mode.
+ *  syncFullChapterBanner guards against replacing this element's innerHTML while its title is
+ *  focused, so typing here doesn't blow away the cursor mid-edit. */
 function chapterBannerInner(ch) {
-  return `<span class="col"><span class="chapter-num">Chapter ${chapterNumber(ch)}</span><span class="chapter-title-text">${escapeHtml(ch.title)}</span></span>`;
+  return `<span class="col"><span class="chapter-num">Chapter ${chapterNumber(ch)}</span><span class="chapter-title-text" contenteditable="true" data-chapter-id="${ch.id}"></span></span>`;
 }
 
 /** Full-manuscript mode shows one persistent sticky banner for "whichever chapter you're
@@ -1204,7 +1204,11 @@ function syncFullChapterBanner() {
   const banner = document.getElementById("fullChapterBanner");
   const ch = getChapter(state.activeChapterId);
   if (!banner || !ch) return;
+  // Don't clobber the banner's own title field while the user is typing in it — its "input"
+  // listener (bindChapterStickyHeaders) calls back into this function on every keystroke.
+  if (banner.contains(document.activeElement)) return;
   banner.innerHTML = chapterBannerInner(ch);
+  bindChapterStickyHeaders(banner);
 }
 
 function syncChapterTitleDisplays(chapterId) {
@@ -1364,11 +1368,9 @@ function renderRightPanel() {
 
   rightPanelEl.innerHTML = `
     <div class="right-head">
-      <span class="right-label">Scene Details</span>
+      <span class="right-label">Chapter ${chapterNumber(ch)} - Scene ${sceneNumber(ch, sc)}</span>
       <button class="tbtn" id="rightHide" style="background:transparent;color:var(--text-muted);padding:4px 6px">Hide &rsaquo;</button>
     </div>
-    <div class="chapter-title-heading">Chapter ${chapterNumber(ch)}</div>
-    <div class="scene-title-heading">Scene ${sceneNumber(ch, sc)}</div>
     <div class="summary-block">
       <div class="section-label">Title</div>
       <div class="summary-text" contenteditable="true" id="sceneTitleText"></div>
