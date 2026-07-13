@@ -4,7 +4,7 @@ import { escapeHtml, formatRelativeTime, markdownToScene } from "./model.js";
 import {
   getGithubSettings, disconnectGithub,
   listOutbox, listConflicts, syncNow, resolveConflictKeepMine, resolveConflictUseTheirs,
-  getLocalContentForConflict, connectToRepo, isUsableVaultRepo,
+  getLocalContentForConflict, connectToRepo, isUsableVaultRepo, resolveAllConflicts,
 } from "./sync-engine.js";
 import { getActiveBookId, exportDataAsJson, importDataFromJson } from "./persistence.js";
 import { diffLines, diffWords } from "./diff.js";
@@ -98,7 +98,16 @@ export async function renderSettingsView(container, callbacks) {
       try {
         await connectToRepo(owner, repo);
         state.pendingOAuthVaultPick = null;
+        // Sync right away instead of leaving a freshly-connected repo sitting at "Last synced:
+        // Never" until the user notices and clicks Sync Now themselves — this is the single-repo
+        // auto-connect case's equivalent of the boot-time sync main.js kicks off on its own.
+        setStatus("settingsStatus", "Connected. Syncing…", false);
+        const bookId = getActiveBookId();
+        const { pushResult, pullResult } = await syncNow(bookId, { force: true });
+        state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
+        if (pullResult.pulled > 0 && notifyBookDataChanged) await notifyBookDataChanged(bookId);
         await renderSettingsView(container, callbacks);
+        if (onSyncStatusChanged) onSyncStatusChanged();
       } catch (err) {
         connectGrantedBtn.disabled = false;
         setStatus("settingsStatus", `Failed: ${err.message}`, true);
@@ -191,6 +200,41 @@ export async function renderSettingsView(container, callbacks) {
     };
     reader.readAsText(file);
   };
+
+  const resolveAllMineBtn = document.getElementById("resolveAllMine");
+  const resolveAllTheirsBtn = document.getElementById("resolveAllTheirs");
+  if (resolveAllMineBtn) {
+    resolveAllMineBtn.onclick = async () => {
+      resolveAllMineBtn.disabled = true;
+      if (resolveAllTheirsBtn) resolveAllTheirsBtn.disabled = true;
+      resolveAllMineBtn.textContent = "Resolving…";
+      setStatus("syncStatus", "Resolving all — pushing your versions…", false);
+      // Same "re-queue then actually push now" pattern as the single Keep Mine button — one
+      // shared force-push covers every conflict just re-queued, rather than one push each.
+      const { count } = await resolveAllConflicts("mine");
+      const { pushResult } = await syncNow(null, { force: true });
+      await renderSettingsView(container, callbacks);
+      setStatus("syncStatus", `Resolved ${count} conflict(s). Pushed ${pushResult.pushed} file(s).`, false);
+      if (onSyncStatusChanged) onSyncStatusChanged();
+    };
+  }
+  if (resolveAllTheirsBtn) {
+    resolveAllTheirsBtn.onclick = async () => {
+      resolveAllTheirsBtn.disabled = true;
+      if (resolveAllMineBtn) resolveAllMineBtn.disabled = true;
+      resolveAllTheirsBtn.textContent = "Resolving…";
+      setStatus("syncStatus", "Resolving all — taking GitHub's versions…", false);
+      const { count, bookIds } = await resolveAllConflicts("theirs");
+      // notifyBookDataChanged no-ops for any bookId that isn't the currently open one, so it's
+      // safe to call once per distinct book touched rather than figuring out which one matters.
+      if (notifyBookDataChanged) {
+        for (const bookId of bookIds) await notifyBookDataChanged(bookId);
+      }
+      await renderSettingsView(container, callbacks);
+      setStatus("syncStatus", `Resolved ${count} conflict(s) using GitHub's versions.`, false);
+      if (onSyncStatusChanged) onSyncStatusChanged();
+    };
+  }
 
   conflicts.forEach((c) => {
     const toggleBtn = document.getElementById(`toggleDiff-${c.key}`);
@@ -363,7 +407,15 @@ function renderConflictsSection(conflicts) {
     .join("");
   return `
     <div class="settings-section">
-      <div class="section-label">Conflicts (${conflicts.length})</div>
+      <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <span>Conflicts (${conflicts.length})</span>
+        ${conflicts.length > 1 ? `
+          <div class="settings-actions-row">
+            <button class="tbtn" id="resolveAllMine">Keep Mine (All)</button>
+            <button class="tbtn" id="resolveAllTheirs">Use GitHub's (All)</button>
+          </div>
+        ` : ""}
+      </div>
       ${rows}
     </div>
   `;

@@ -558,3 +558,19 @@ export async function resolveConflictUseTheirs(key) {
   await dbDelete("outbox", key);
   await dbDelete("conflicts", key);
 }
+
+/** Resolves every current conflict the same way — "mine" (resolveConflictKeepMine) or "theirs"
+ *  (resolveConflictUseTheirs) for all of them — for clearing out a batch of conflicts (e.g. after
+ *  reconnecting resets local sync bookkeeping and re-flags already-matching content, see
+ *  disconnectGithub) without clicking through each one individually. Returns the distinct bookIds
+ *  touched, so the caller knows whether the currently open book needs refreshing. */
+export async function resolveAllConflicts(strategy) {
+  const conflicts = await listConflicts();
+  const bookIds = new Set();
+  for (const c of conflicts) {
+    if (strategy === "mine") await resolveConflictKeepMine(c.key);
+    else await resolveConflictUseTheirs(c.key);
+    bookIds.add(c.bookId);
+  }
+  return { count: conflicts.length, bookIds: [...bookIds] };
+}

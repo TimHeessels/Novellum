@@ -100,10 +100,20 @@ async function boot() {
 
   // Background, after the first paint: push+pull anything that changed since last time. This
   // doubles as the "is GitHub actually reachable" check on page load — `pushResult.pauseReason`
-  // covers both "no token yet" and "token/repo present but the connection is failing".
+  // covers both "no token yet" and "token/repo present but the connection is failing". Also what
+  // makes a fresh "Connect GitHub" feel instant — this fires right after boot, no separate
+  // manual "Sync Now" click needed.
   const { pushResult, pullResult } = await syncNow(bookId);
   state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
-  if (pullResult.pulled > 0) await refreshActiveBookView(bookId);
+  // If Settings happens to be the view showing (e.g. right after a fresh connect), refreshing
+  // just the topbar badge below isn't enough — the panel's own "last synced"/pending/conflict
+  // list only redraw when renderSettingsView actually re-runs, which a plain refreshSyncStatusUI()
+  // doesn't trigger. render() re-renders whichever view is current, Settings included.
+  if (state.view === "settings") {
+    render();
+  } else if (pullResult.pulled > 0) {
+    await refreshActiveBookView(bookId);
+  }
   refreshSyncStatusUI();
 
   startAutoSync();
@@ -169,7 +179,12 @@ async function runAutoSync() {
   try {
     const { pushResult, pullResult } = await syncNow(state.activeBookId);
     state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
-    if (pullResult.pulled > 0) {
+    // Settings has no cursor/focus to protect, so it's always safe to just re-render it directly
+    // rather than going through the "is the user actively editing" deferral below (see main
+    // boot()'s sync for why refreshSyncStatusUI() alone doesn't update the panel's own contents).
+    if (state.view === "settings") {
+      render();
+    } else if (pullResult.pulled > 0) {
       if (isActivelyEditing()) {
         pendingViewRefresh = true;
       } else {
