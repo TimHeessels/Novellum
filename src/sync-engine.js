@@ -57,6 +57,43 @@ export async function isUsableVaultRepo(owner, repo, defaultBranch) {
   return rootEntries.every((e) => VAULT_SAFE_ROOT_ENTRIES.has(e.path.toLowerCase()));
 }
 
+/** True only for a book that's exactly the untouched fresh-install seed (see `data` in
+ *  model.js) — not merely one that's never synced, which could just as easily be a real book the
+ *  user has been writing in on this device before ever connecting GitHub. */
+async function isUntouchedPlaceholderBook(bookId) {
+  const [bookRow, chapters, scenes] = await Promise.all([
+    dbGet("books", bookId),
+    dbGetAllByIndex("chapters", "bookId", bookId),
+    dbGetAllByIndex("scenes", "bookId", bookId),
+  ]);
+  if (!bookRow || bookRow.title !== "Untitled Book") return false;
+  if (chapters.length !== 1 || chapters[0].title !== "Chapter 1") return false;
+  if (scenes.length !== 1) return false;
+  const sc = scenes[0];
+  return sc.title === "Untitled Scene" && !sc.summary && !sc.text && (!sc.todos || sc.todos.length === 0);
+}
+
+/** DEFAULT_BOOK_ID (persistence.js) is a fixed id shared by every fresh install, so the very
+ *  first sync of a brand-new device and the vault a previously-set-up device already pushed under
+ *  that same id can collide the moment GitHub gets connected. If this device's active book is
+ *  still exactly the untouched placeholder seed, and the just-connected repo already has real
+ *  content at that same path, pushing the placeholder would only conflict on manifest/bible and
+ *  silently litter the vault with an orphaned scene file (it has a fresh random id, so GitHub
+ *  sees it as brand new rather than conflicting, and nothing in the real manifest ever references
+ *  it). Drop the placeholder's queued bootstrap instead — the next pull adopts the real remote
+ *  content normally, same as any other never-synced device joining an existing vault. Never
+ *  touches a book the user has actually started writing in; that still goes through the normal
+ *  conflict flow so they get to choose. */
+async function dropStaleBootstrapIfRemoteExists(token, owner, repo, bookId) {
+  const meta = await dbGet("manifestMeta", bookId);
+  if (meta && meta.manifestSha) return;
+  if (!(await isUntouchedPlaceholderBook(bookId))) return;
+  const remoteManifest = await gh.getFile(token, owner, repo, `books/${bookId}/manifest.json`).catch(() => null);
+  if (!remoteManifest) return;
+  const outbox = await dbGetAll("outbox");
+  await Promise.all(outbox.filter((e) => e.bookId === bookId).map((e) => dbDelete("outbox", e.key)));
+}
+
 /** Connects to one of the repos this GitHub App installation was granted, saving it as the
  *  active vault. Doesn't run the usability check itself — see isUsableVaultRepo, which callers
  *  can re-run afterward to warn without blocking. */
@@ -64,8 +101,21 @@ export async function connectToRepo(owner, repo) {
   const { token } = await getGithubSettings();
   if (!token) throw new Error("No token set.");
   const info = await gh.testRepoAccess(token, owner, repo);
-  await patchGithubSettings({ owner, repo, defaultBranch: info.defaultBranch });
-  return { owner, repo };
+
+  // Locked from here on: patchGithubSettings below is the moment GitHub becomes "configured",
+  // and a concurrently-running auto-sync tick could start draining the outbox right after —
+  // including, for a never-synced device, the stale placeholder bootstrap entries
+  // dropStaleBootstrapIfRemoteExists is about to clear. Without the lock, that auto-sync could
+  // win the race and push them first, recreating the exact conflicts/orphan-file bug this exists
+  // to prevent.
+  return withSyncLock(async () => {
+    await patchGithubSettings({ owner, repo, defaultBranch: info.defaultBranch });
+
+    const bookId = getActiveBookId();
+    if (bookId) await dropStaleBootstrapIfRemoteExists(token, owner, repo, bookId);
+
+    return { owner, repo };
+  });
 }
 
 /** Completes "Connect GitHub" right after the install-picker redirect: saves the token, then
@@ -116,18 +166,38 @@ async function syncNowInner(bookId, { force = false } = {}) {
   return { pushResult, pullResult };
 }
 
-// Every caller (the background timer, the manual "Sync Now" button, the boot-time sync) funnels
-// through this same chain so two syncs can never run concurrently. Without it, two overlapping
-// runs both flush the same in-memory `data` to IndexedDB from a stale read, then both try to
-// push the same scene — the second push's expected sha is already stale by the time it lands,
-// so GitHub rejects it as a conflict even though nothing actually differs but a timestamp.
+// Every caller (the background timer, the manual "Sync Now" button, the boot-time sync, and
+// anything else below that touches a book's chapters/scenes rows from a pull) funnels through
+// this same chain so two such operations can never run concurrently. Without it, e.g. a pull that
+// writes freshly-fetched chapters/scenes to IndexedDB (reconcileBook / resolveConflictUseTheirs)
+// can be immediately clobbered by a background auto-sync's flushSaveNow(), which does a blind
+// full-table replace of "chapters"/"scenes" from the in-memory `data` object — and `data` won't
+// reflect the pull's results until the caller has had a chance to loadBook() again. Callers that
+// need that refresh to also be race-free (settings-ui.js's conflict resolution, ui.js's
+// switchToBook) wrap their whole "write + refresh local `data`" sequence in withSyncLock too, so
+// no auto-sync tick can land in between. Never call withSyncLock from inside a function that's
+// already running inside one — the chain isn't reentrant and it will deadlock.
 let syncChain = Promise.resolve();
-export function syncNow(bookId, opts) {
-  const result = syncChain.then(() => syncNowInner(bookId, opts));
-  // Swallow the error here so one failed sync doesn't wedge the chain for every sync after it —
-  // the caller of *this* call still sees the rejection via `result`, which is returned untouched.
+export function withSyncLock(fn) {
+  const result = syncChain.then(fn);
+  // Swallow the error here so one failed operation doesn't wedge the chain for every operation
+  // after it — the caller of *this* call still sees the rejection via `result`, which is returned
+  // untouched.
   syncChain = result.catch(() => {});
   return result;
+}
+
+/** `onPulled`, if given, runs inside the same lock right after a pull that actually changed
+ *  something (`pullResult.pulled > 0`) — for callers that need to refresh the in-memory `data`
+ *  object (or otherwise react) atomically with the pull, so a queued-up auto-sync tick can't slip
+ *  in between "IndexedDB updated" and "the refresh caught up to it" and clobber the pull with a
+ *  stale flush (see withSyncLock's comment above). */
+export function syncNow(bookId, { onPulled, ...opts } = {}) {
+  return withSyncLock(async () => {
+    const result = await syncNowInner(bookId, opts);
+    if (onPulled && result.pullResult.pulled > 0) await onPulled();
+    return result;
+  });
 }
 
 /* ---------------------------------------------------------------- */
@@ -376,8 +446,11 @@ async function getBookRemoteTree(token, owner, repo, ref, bookId) {
 }
 
 /** Adopts a remote manifest's chapter/scene structure locally, pulling in any scene that
- *  doesn't exist locally yet. Only call this for a book whose manifest isn't itself dirty. */
-async function applyRemoteManifest(bookId, remoteManifest, remoteByPath, dirtyKeys, token, owner, repo) {
+ *  doesn't exist locally yet. Only call this for a book whose manifest isn't itself dirty —
+ *  every local structural change (move, reorder, delete, chapter rename) marks the manifest
+ *  dirty too (see markDirty("manifest", ...) call sites in ui.js), so by the time a caller gets
+ *  here there's guaranteed to be no pending local placement change for this to clobber. */
+async function applyRemoteManifest(bookId, remoteManifest, remoteByPath, token, owner, repo) {
   const now = new Date().toISOString();
   const localScenes = await dbGetAllByIndex("scenes", "bookId", bookId);
   const localScenesById = new Map(localScenes.map((s) => [s.id, s]));
@@ -389,12 +462,13 @@ async function applyRemoteManifest(bookId, remoteManifest, remoteByPath, dirtyKe
     for (const [scIndex, sceneId] of ch.sceneIds.entries()) {
       const existing = localScenesById.get(sceneId);
       if (existing) {
-        // Already known locally — adopt remote's placement/order unless we have unpushed
-        // edits to this specific scene, in which case its own content diff (handled by the
-        // caller) decides whether it's a conflict; don't fight over its position here too.
-        if (!dirtyKeys.has(`scene:${sceneId}`)) {
-          await dbPut("scenes", { ...existing, chapterId: ch.id, order: scIndex });
-        }
+        // Always adopt remote's placement/order, even if this scene also has an unpushed
+        // *content* edit (a separate concern the caller resolves independently via its own sha
+        // diff) — chapters are about to be wholesale-replaced below, so skipping this used to
+        // leave a content-dirty scene pointing at a chapterId that no longer existed, silently
+        // orphaning it (invisible in the UI, though its content survived in IndexedDB) whenever
+        // it had a pending content conflict at the same moment the manifest changed remotely.
+        await dbPut("scenes", { ...existing, chapterId: ch.id, order: scIndex });
         continue;
       }
       // Exists remotely but not locally yet — e.g. created on another device. Pull it in full.
@@ -460,7 +534,7 @@ export async function reconcileBook(bookId) {
       conflicts += 1;
     } else {
       const blob = await gh.getBlob(token, owner, repo, manifestSha);
-      await applyRemoteManifest(bookId, JSON.parse(blob.content), remoteByPath, dirtyKeys, token, owner, repo);
+      await applyRemoteManifest(bookId, JSON.parse(blob.content), remoteByPath, token, owner, repo);
       await dbPut("manifestMeta", { ...meta, bookId, manifestSha });
       pulled += 1;
     }
@@ -550,7 +624,7 @@ export async function resolveConflictUseTheirs(key) {
   } else if (conflict.kind === "manifest") {
     const { token, owner, repo, defaultBranch } = await getGithubSettings();
     const remoteByPath = await getBookRemoteTree(token, owner, repo, defaultBranch || "main", conflict.bookId);
-    await applyRemoteManifest(conflict.bookId, JSON.parse(conflict.remoteContent), remoteByPath, new Set(), token, owner, repo);
+    await applyRemoteManifest(conflict.bookId, JSON.parse(conflict.remoteContent), remoteByPath, token, owner, repo);
     const meta = (await dbGet("manifestMeta", conflict.bookId)) || { bookId: conflict.bookId };
     await dbPut("manifestMeta", { ...meta, manifestSha: conflict.remoteSha });
   }

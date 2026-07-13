@@ -12,13 +12,18 @@ import {
   listBooks, loadBook, setActiveBookId, getActiveBookId, persistNow, flushSaveNow,
   saveUiPrefs, deleteBook,
 } from "./persistence.js";
-import { enqueueSync, ensureBookBootstrapped, reconcileBook, getSyncStatus } from "./sync-engine.js";
+import { enqueueSync, ensureBookBootstrapped, reconcileBook, getSyncStatus, withSyncLock } from "./sync-engine.js";
 import { renderSettingsView } from "./settings-ui.js";
 import { renderOverviewView } from "./overview-ui.js";
 import { exportManuscript } from "./export.js";
 import { buildChaptersFromMarkdown } from "./import.js";
 
 function markDirty(kind, targetId) {
+  // Set synchronously, ahead of enqueueSync's own IndexedDB write actually landing — main.js's
+  // beforeunload handler needs an immediately-current answer, and correctness only requires this
+  // flag to ever be true when there's real pending work, not the reverse (refreshSyncStatusUI
+  // below is what's allowed to clear it back to false, once it's actually confirmed empty).
+  state.hasPendingSync = true;
   enqueueSync(kind, targetId).catch((err) => console.error("Novellum: outbox enqueue failed", err));
 }
 
@@ -592,6 +597,8 @@ function renderTopbar() {
  *  without needing a full app re-render. */
 async function refreshSyncStatusUI() {
   const status = await getSyncStatus();
+  state.hasPendingSync = status.pendingCount > 0;
+  state.syncConfigured = status.configured;
 
   const badge = document.getElementById("syncStatusBadge");
   if (badge) {
@@ -698,9 +705,16 @@ async function switchToBook(bookId) {
   // Show local content immediately (above), then pull anything newer from GitHub in the
   // background and refresh once — the whole point of switching books is to see this book's
   // latest state, so unlike the periodic background sync, it's fine to just re-render here.
-  const result = await reconcileBook(bookId);
+  // The pull itself and the loadBook() that refreshes `data` from its results run inside
+  // withSyncLock together — otherwise a background auto-sync tick landing in the gap between
+  // them would flush the still-stale in-memory `data` and clobber the scenes/chapters this pull
+  // just wrote (see withSyncLock's own comment in sync-engine.js).
+  const result = await withSyncLock(async () => {
+    const r = await reconcileBook(bookId);
+    if (r.pulled > 0 && state.activeBookId === bookId) await loadBook(bookId);
+    return r;
+  });
   if (result.pulled > 0 && state.activeBookId === bookId) {
-    await loadBook(bookId);
     if (!getSceneAndChapter(state.activeSceneId).scene) {
       setActiveSceneState(data.chapters[0]?.id, data.chapters[0]?.scenes[0]?.id);
     }

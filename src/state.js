@@ -34,4 +34,10 @@ export const state = {
   // Settings renders this as an explicit "which one is the vault" prompt instead of guessing;
   // cleared once the user picks one.
   pendingOAuthVaultPick: null,
+  // Cheap, synchronously-readable mirror of getSyncStatus()'s pendingCount/configured — kept in
+  // sync by markDirty() (set true the instant an edit is queued) and refreshSyncStatusUI() (the
+  // source of truth, corrects it either way). Exists because main.js's beforeunload handler needs
+  // to decide whether to warn without being able to await an IndexedDB read at that point.
+  hasPendingSync: false,
+  syncConfigured: false,
 };

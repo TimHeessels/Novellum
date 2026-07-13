@@ -4,7 +4,7 @@ import { escapeHtml, formatRelativeTime, markdownToScene } from "./model.js";
 import {
   getGithubSettings, disconnectGithub,
   listOutbox, listConflicts, syncNow, resolveConflictKeepMine, resolveConflictUseTheirs,
-  getLocalContentForConflict, connectToRepo, isUsableVaultRepo, resolveAllConflicts,
+  getLocalContentForConflict, connectToRepo, isUsableVaultRepo, resolveAllConflicts, withSyncLock,
 } from "./sync-engine.js";
 import { getActiveBookId, exportDataAsJson, importDataFromJson } from "./persistence.js";
 import { diffLines, diffWords } from "./diff.js";
@@ -103,9 +103,14 @@ export async function renderSettingsView(container, callbacks) {
         // auto-connect case's equivalent of the boot-time sync main.js kicks off on its own.
         setStatus("settingsStatus", "Connected. Syncing…", false);
         const bookId = getActiveBookId();
-        const { pushResult, pullResult } = await syncNow(bookId, { force: true });
+        // notifyBookDataChanged runs inside syncNow's onPulled hook, still holding the sync lock,
+        // so a background auto-sync tick can't land in the gap and flush stale in-memory `data`
+        // over what this pull just wrote (see withSyncLock's comment in sync-engine.js).
+        const { pushResult, pullResult } = await syncNow(bookId, {
+          force: true,
+          onPulled: () => notifyBookDataChanged && notifyBookDataChanged(bookId),
+        });
         state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
-        if (pullResult.pulled > 0 && notifyBookDataChanged) await notifyBookDataChanged(bookId);
         await renderSettingsView(container, callbacks);
         if (onSyncStatusChanged) onSyncStatusChanged();
       } catch (err) {
@@ -124,9 +129,13 @@ export async function renderSettingsView(container, callbacks) {
       syncNowBtn.disabled = true;
       setStatus("syncStatus", "Syncing…", false);
       const bookId = getActiveBookId();
-      const { pushResult, pullResult } = await syncNow(bookId, { force: true });
+      // See connectGrantedBtn above for why notifyBookDataChanged runs inside onPulled rather
+      // than after this await returns.
+      const { pushResult, pullResult } = await syncNow(bookId, {
+        force: true,
+        onPulled: () => notifyBookDataChanged && notifyBookDataChanged(bookId),
+      });
       state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
-      if (pullResult.pulled > 0 && notifyBookDataChanged) await notifyBookDataChanged(bookId);
       // Push and pull can both flag the same target as conflicting in one pass (e.g. a structural
       // push conflict gets rediscovered during reconciliation) — they'd double-count it if summed,
       // so re-read the actual conflict list rather than trusting each pass's own tally.
@@ -224,12 +233,21 @@ export async function renderSettingsView(container, callbacks) {
       if (resolveAllMineBtn) resolveAllMineBtn.disabled = true;
       resolveAllTheirsBtn.textContent = "Resolving…";
       setStatus("syncStatus", "Resolving all — taking GitHub's versions…", false);
-      const { count, bookIds } = await resolveAllConflicts("theirs");
-      // notifyBookDataChanged no-ops for any bookId that isn't the currently open one, so it's
-      // safe to call once per distinct book touched rather than figuring out which one matters.
-      if (notifyBookDataChanged) {
-        for (const bookId of bookIds) await notifyBookDataChanged(bookId);
-      }
+      // The resolve (which writes the accepted GitHub content straight to IndexedDB) and the
+      // notifyBookDataChanged refresh (which catches the in-memory manuscript back up to it) run
+      // inside withSyncLock together — otherwise a background auto-sync tick landing in that gap
+      // would flush the still-stale in-memory `data` and clobber what was just written (see
+      // withSyncLock's comment in sync-engine.js; this is the "scenes went missing after a pull"
+      // failure mode).
+      const { count, bookIds } = await withSyncLock(async () => {
+        const result = await resolveAllConflicts("theirs");
+        // notifyBookDataChanged no-ops for any bookId that isn't the currently open one, so it's
+        // safe to call once per distinct book touched rather than figuring out which one matters.
+        if (notifyBookDataChanged) {
+          for (const bookId of result.bookIds) await notifyBookDataChanged(bookId);
+        }
+        return result;
+      });
       await renderSettingsView(container, callbacks);
       setStatus("syncStatus", `Resolved ${count} conflict(s) using GitHub's versions.`, false);
       if (onSyncStatusChanged) onSyncStatusChanged();
@@ -275,11 +293,16 @@ export async function renderSettingsView(container, callbacks) {
         if (keepBtn) keepBtn.disabled = true;
         theirsBtn.textContent = "Resolving…";
         setStatus("syncStatus", "Resolving — taking GitHub's version…", false);
-        await resolveConflictUseTheirs(c.key);
-        // The accepted GitHub content only landed in IndexedDB — if this book is the one
-        // currently open, the in-memory manuscript/UI must be refreshed too, or the next
-        // local edit would silently overwrite the version we just accepted.
-        if (notifyBookDataChanged) await notifyBookDataChanged(c.bookId);
+        // Both steps run inside withSyncLock together — see the comment on the "Use GitHub's
+        // (All)" handler above for why: without it, a background auto-sync tick landing between
+        // them can flush stale in-memory `data` over the content just accepted here.
+        await withSyncLock(async () => {
+          await resolveConflictUseTheirs(c.key);
+          // The accepted GitHub content only landed in IndexedDB — if this book is the one
+          // currently open, the in-memory manuscript/UI must be refreshed too, or the next
+          // local edit would silently overwrite the version we just accepted.
+          if (notifyBookDataChanged) await notifyBookDataChanged(c.bookId);
+        });
         await renderSettingsView(container, callbacks);
         setStatus("syncStatus", "Took GitHub's version.", false);
         if (onSyncStatusChanged) onSyncStatusChanged();

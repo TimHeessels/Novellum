@@ -4,7 +4,7 @@ import { initApp, render, refreshSyncStatusUI } from "./ui.js";
 import { data, getSceneAndChapter } from "./model.js";
 import { state } from "./state.js";
 import { DEFAULT_BOOK_ID, listBooks, loadBook, setActiveBookId, persistNow, flushSaveNow, loadUiPrefs } from "./persistence.js";
-import { ensureBookBootstrapped, syncNow, completeGithubAppLogin } from "./sync-engine.js";
+import { ensureBookBootstrapped, syncNow, completeGithubAppLogin, withSyncLock } from "./sync-engine.js";
 import { consumePendingOAuthResult } from "./github-oauth.js";
 
 const AUTO_SYNC_INTERVAL_MS = 60000;
@@ -98,12 +98,35 @@ async function boot() {
     flushSaveNow();
   });
 
+  // Closing the tab only guarantees a local IndexedDB flush (above) — not a push to GitHub. If
+  // there's anything still unpushed, warn before actually closing (the browser shows its own
+  // generic "changes may not be saved" text; the message string here is ignored by modern
+  // browsers but still required for the prompt to appear at all) and fire off a sync attempt in
+  // the same tick. Kicking it off here rather than waiting for the visibilitychange handler in
+  // startAutoSync() below gives it a head start: if the user gets the confirmation prompt, the
+  // page stays alive for as long as that dialog is up, which is extra time for the push to
+  // actually land before they decide. Not a guarantee — the browser can still tear the page down
+  // without ever showing the prompt, or before an in-flight request finishes — just the best a
+  // page-unload hook can do.
+  window.addEventListener("beforeunload", (e) => {
+    if (!state.syncConfigured || !state.hasPendingSync) return;
+    runAutoSync();
+    e.preventDefault();
+    e.returnValue = "";
+  });
+
   // Background, after the first paint: push+pull anything that changed since last time. This
   // doubles as the "is GitHub actually reachable" check on page load — `pushResult.pauseReason`
   // covers both "no token yet" and "token/repo present but the connection is failing". Also what
   // makes a fresh "Connect GitHub" feel instant — this fires right after boot, no separate
   // manual "Sync Now" click needed.
-  const { pushResult, pullResult } = await syncNow(bookId);
+  //
+  // The refresh runs inside syncNow's onPulled hook, still holding the sync lock, rather than
+  // after this await returns — otherwise a background auto-sync tick could land in the gap and
+  // flush the still-stale in-memory `data` over whatever this pull just wrote to IndexedDB.
+  const { pushResult, pullResult } = await syncNow(bookId, {
+    onPulled: () => (state.view === "settings" ? null : refreshActiveBookView(bookId)),
+  });
   state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
   // If Settings happens to be the view showing (e.g. right after a fresh connect), refreshing
   // just the topbar badge below isn't enough — the panel's own "last synced"/pending/conflict
@@ -111,8 +134,6 @@ async function boot() {
   // doesn't trigger. render() re-renders whichever view is current, Settings included.
   if (state.view === "settings") {
     render();
-  } else if (pullResult.pulled > 0) {
-    await refreshActiveBookView(bookId);
   }
   refreshSyncStatusUI();
 
@@ -177,19 +198,26 @@ async function runAutoSync() {
   if (autoSyncInFlight || !state.activeBookId) return;
   autoSyncInFlight = true;
   try {
-    const { pushResult, pullResult } = await syncNow(state.activeBookId);
+    // The refresh (or the decision to defer it) runs inside syncNow's onPulled hook, still
+    // holding the sync lock — see boot()'s sync above for why. Deferring here only skips the
+    // *re-render* to protect the user's cursor; the deferred continuation on focusout below
+    // re-acquires the lock itself when it actually runs.
+    const { pushResult, pullResult } = await syncNow(state.activeBookId, {
+      onPulled: async () => {
+        if (state.view === "settings") return;
+        if (isActivelyEditing()) {
+          pendingViewRefresh = true;
+        } else {
+          await refreshActiveBookView(state.activeBookId);
+        }
+      },
+    });
     state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
     // Settings has no cursor/focus to protect, so it's always safe to just re-render it directly
-    // rather than going through the "is the user actively editing" deferral below (see main
+    // rather than going through the "is the user actively editing" deferral above (see main
     // boot()'s sync for why refreshSyncStatusUI() alone doesn't update the panel's own contents).
     if (state.view === "settings") {
       render();
-    } else if (pullResult.pulled > 0) {
-      if (isActivelyEditing()) {
-        pendingViewRefresh = true;
-      } else {
-        await refreshActiveBookView(state.activeBookId);
-      }
     }
     refreshSyncStatusUI();
   } catch (err) {
@@ -209,7 +237,9 @@ function startAutoSync() {
     setTimeout(() => {
       if (pendingViewRefresh && !isActivelyEditing()) {
         pendingViewRefresh = false;
-        refreshActiveBookView(state.activeBookId);
+        // Re-acquires the lock for this deferred continuation too, so it can't run at the same
+        // moment as another queued sync operation and race it the same way (see boot()'s sync).
+        withSyncLock(() => refreshActiveBookView(state.activeBookId));
       }
     }, 0);
   });
