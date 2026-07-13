@@ -75,8 +75,18 @@ export async function testToken(token) {
 }
 
 export async function testRepoAccess(token, owner, repo) {
-  const { data } = await request(token, "GET", `/repos/${owner}/${repo}`);
+  const { status, data } = await request(token, "GET", `/repos/${owner}/${repo}`);
+  if (status === 404 || !data) {
+    throw new GitHubError("notfound", `Repository ${owner}/${repo} not found`, 404);
+  }
   return { defaultBranch: data.default_branch };
+}
+
+/** The signed-in user's own repos (not orgs they belong to) — used to populate the "choose an
+ *  existing repo" vault picker. */
+export async function listUserRepos(token) {
+  const { data } = await request(token, "GET", "/user/repos?per_page=100&sort=updated&affiliation=owner");
+  return (data || []).map((r) => ({ owner: r.owner.login, repo: r.name, private: r.private }));
 }
 
 export async function createRepo(token, name) {

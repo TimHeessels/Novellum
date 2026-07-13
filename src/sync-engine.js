@@ -62,6 +62,56 @@ export async function createRepoForVault(name) {
   return { owner, repo };
 }
 
+export const DEFAULT_VAULT_REPO_NAME = "novellum-vault";
+
+// Root-level files GitHub (or a human) commonly adds to an otherwise-empty repo — safe to adopt
+// as a fresh vault without asking, since there's nothing real to clobber.
+const VAULT_SAFE_ROOT_ENTRIES = new Set(["readme.md", "license", "license.md", ".gitignore"]);
+
+/** A repo is safe to sync a manuscript into if it's empty, only has the boilerplate above, or
+ *  already has this app's own books/ folder (a previously-used vault) — anything else risks
+ *  silently mixing manuscript files into an unrelated project. */
+async function isUsableVaultRepo(token, owner, repo, defaultBranch) {
+  const { tree } = await gh.getTree(token, owner, repo, defaultBranch);
+  if (tree.length === 0) return true;
+  if (tree.some((e) => e.path === "books" || e.path.startsWith("books/"))) return true;
+  const rootEntries = tree.filter((e) => !e.path.includes("/"));
+  return rootEntries.every((e) => VAULT_SAFE_ROOT_ENTRIES.has(e.path.toLowerCase()));
+}
+
+/** First step of "Sign in with GitHub": saves the token and identifies the account. Deliberately
+ *  does not pick a repo — the settings UI decides next, based on whether this account's default
+ *  vault already exists (see connectExistingVaultRepo / createRepoForVault). */
+export async function beginOAuthLogin(token) {
+  await patchGithubSettings({ token, owner: "", repo: "" });
+  const login = await gh.testToken(token);
+  return { login };
+}
+
+/** Connects to an existing repo as the vault, after confirming it's actually safe to sync a
+ *  manuscript into. Throws the underlying GitHubError('notfound', ...) if the repo doesn't
+ *  exist, or a plain Error with a user-facing message if it exists but isn't a usable vault. */
+export async function connectExistingVaultRepo(owner, repo) {
+  const { token } = await getGithubSettings();
+  if (!token) throw new Error("No token set.");
+  const info = await gh.testRepoAccess(token, owner, repo);
+  if (!(await isUsableVaultRepo(token, owner, repo, info.defaultBranch))) {
+    throw new Error(
+      `${owner}/${repo} already has other content and doesn't look like a Novellum vault — ` +
+      `pick an empty repo, or one with a "books" folder from a previous vault.`
+    );
+  }
+  await patchGithubSettings({ owner, repo, defaultBranch: info.defaultBranch });
+  return { owner, repo };
+}
+
+/** The signed-in account's own repos, for the "choose an existing repo" vault picker. */
+export async function listMyRepos() {
+  const { token } = await getGithubSettings();
+  if (!token) throw new Error("No token set.");
+  return gh.listUserRepos(token);
+}
+
 /* ---------------------------------------------------------------- */
 /* Overall sync status (for the topbar badge / conflict banner)      */
 /* ---------------------------------------------------------------- */

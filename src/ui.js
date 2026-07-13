@@ -870,7 +870,7 @@ function renderLeftPanel() {
         <button class="tbtn" data-action="export-manuscript">Export Manuscript</button>
 
         <div class="section-label" style="margin-top:24px">Import</div>
-        <div class="settings-status" style="margin:0 0 10px">Import a manuscript from Markdown. This replaces every chapter and scene in this book — chapters split on "### Chapter" headings, scenes on "* * *" lines.</div>
+        <div class="settings-status" style="margin:0 0 10px">Import a manuscript from Markdown.</div>
         <button class="tbtn" data-action="import-manuscript">Import from Markdown</button>
         <input type="file" id="importMdFile" accept=".md,.markdown,text/markdown" style="display:none">
         <div id="importStatus" class="settings-status"></div>

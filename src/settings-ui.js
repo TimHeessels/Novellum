@@ -2,23 +2,19 @@
 
 import { escapeHtml, formatRelativeTime, markdownToScene } from "./model.js";
 import {
-  getGithubSettings, saveGithubSettings, testConnection, createRepoForVault, disconnectGithub,
+  getGithubSettings, createRepoForVault, disconnectGithub,
   listOutbox, listConflicts, syncNow, resolveConflictKeepMine, resolveConflictUseTheirs,
-  getLocalContentForConflict,
+  getLocalContentForConflict, connectExistingVaultRepo, listMyRepos, DEFAULT_VAULT_REPO_NAME,
 } from "./sync-engine.js";
 import { getActiveBookId, exportDataAsJson, importDataFromJson } from "./persistence.js";
 import { diffLines, diffWords } from "./diff.js";
 import { state } from "./state.js";
-
-// Whether the setup guide is expanded — persists across re-renders within the session (but not
-// across page loads) so a re-render triggered by e.g. "Create Repo" doesn't undo the user's toggle.
-let guideOpenOverride = null;
+import { startGithubLogin } from "./github-oauth.js";
 
 export async function renderSettingsView(container, callbacks) {
   const { onBack, notifyBookDataChanged, onSyncStatusChanged } = callbacks;
   const [settings, outbox, conflicts] = await Promise.all([getGithubSettings(), listOutbox(), listConflicts()]);
   const isConnected = !!(settings.token && settings.owner && settings.repo);
-  const guideOpen = guideOpenOverride === null ? !isConnected : guideOpenOverride;
 
   container.innerHTML = `
     <div class="settings-view">
@@ -27,7 +23,11 @@ export async function renderSettingsView(container, callbacks) {
         <h2>GitHub Sync Settings</h2>
       </div>
 
-      ${isConnected ? renderConnectedPhase(settings) : renderSetupPhase(settings, guideOpen)}
+      ${isConnected
+        ? renderConnectedPhase(settings)
+        : state.pendingOAuthVaultPick
+          ? renderVaultPickPhase(state.pendingOAuthVaultPick)
+          : renderSetupPhase()}
 
       ${isConnected ? `
         <div class="settings-section">
@@ -55,20 +55,6 @@ export async function renderSettingsView(container, callbacks) {
     </div>
   `;
 
-  // The token/owner/repo inputs only exist in the setup phase (not connected) — once
-  // connected, fall back to the already-saved settings so callers like Sync Now can still
-  // read a value without caring which phase is currently rendered.
-  const readFields = () => {
-    const tokenEl = document.getElementById("settingsToken");
-    const ownerEl = document.getElementById("settingsOwner");
-    const repoEl = document.getElementById("settingsRepo");
-    return {
-      token: tokenEl ? tokenEl.value.trim() : settings.token || "",
-      owner: ownerEl ? ownerEl.value.trim() : settings.owner || "",
-      repo: repoEl ? repoEl.value.trim() : settings.repo || "",
-    };
-  };
-
   function setStatus(id, msg, isError) {
     const el = document.getElementById(id);
     if (el) {
@@ -79,82 +65,76 @@ export async function renderSettingsView(container, callbacks) {
 
   document.getElementById("settingsBack").onclick = onBack;
 
-  const guideEl = document.getElementById("settingsGuide");
-  if (guideEl) {
-    guideEl.addEventListener("toggle", (e) => {
-      guideOpenOverride = e.target.open;
-    });
+  // A "Sign in with GitHub" redirect may have just completed (see main.js) before this view's
+  // first render — surface the result once here, then clear it so it doesn't reappear on the
+  // next unrelated re-render.
+  if (state.oauthLoginError) {
+    setStatus("settingsStatus", state.oauthLoginError, true);
+    state.oauthLoginError = null;
   }
 
-  const tokenPasteBtn = document.getElementById("settingsTokenPaste");
-  if (tokenPasteBtn) {
-    tokenPasteBtn.onclick = async () => {
-      const input = document.getElementById("settingsToken");
+  const oauthLoginBtn = document.getElementById("settingsOAuthLogin");
+  if (oauthLoginBtn) {
+    oauthLoginBtn.onclick = () => {
+      oauthLoginBtn.disabled = true;
+      oauthLoginBtn.textContent = "Redirecting to GitHub…";
+      startGithubLogin();
+    };
+  }
+
+  const createVaultBtn = document.getElementById("settingsCreateVault");
+  if (createVaultBtn) {
+    createVaultBtn.onclick = async () => {
+      createVaultBtn.disabled = true;
+      setStatus("settingsStatus", "Creating vault…", false);
       try {
-        const text = (await navigator.clipboard.readText()).trim();
-        if (text) input.value = text;
-        input.focus();
-      } catch {
-        // Clipboard read can be blocked (permissions, insecure context, etc.) — fall back to
-        // letting the user paste manually rather than failing silently.
-        input.focus();
-        setStatus("settingsStatus", "Couldn't read the clipboard automatically — paste into the field with Ctrl+V instead.", true);
-      }
-    };
-  }
-
-  const tokenShowBtn = document.getElementById("settingsTokenShow");
-  if (tokenShowBtn) {
-    tokenShowBtn.onclick = (e) => {
-      const input = document.getElementById("settingsToken");
-      const showing = input.type === "text";
-      input.type = showing ? "password" : "text";
-      e.target.textContent = showing ? "Show" : "Hide";
-    };
-  }
-
-  const saveBtn = document.getElementById("settingsSave");
-  if (saveBtn) {
-    saveBtn.onclick = async () => {
-      await saveGithubSettings(readFields());
-      await renderSettingsView(container, callbacks);
-      setStatus("settingsStatus", "Saved.", false);
-    };
-  }
-
-  const testBtn = document.getElementById("settingsTest");
-  if (testBtn) {
-    testBtn.onclick = async () => {
-      setStatus("settingsStatus", "Testing…", false);
-      try {
-        await saveGithubSettings(readFields());
-        const result = await testConnection();
-        if (!result.repoOk) {
-          setStatus("settingsStatus", `Token OK (signed in as ${result.login}). Set an owner/repo and test again, or create a repo below.`, false);
-        } else {
-          setStatus("settingsStatus", `Connected as ${result.login}. Repo access OK (default branch: ${result.defaultBranch}).`, false);
-        }
-      } catch (err) {
-        setStatus("settingsStatus", `Failed: ${err.message}`, true);
-      }
-    };
-  }
-
-  const createRepoBtn = document.getElementById("settingsCreateRepo");
-  if (createRepoBtn) {
-    createRepoBtn.onclick = async () => {
-      setStatus("settingsStatus", "Creating repo…", false);
-      try {
-        await saveGithubSettings(readFields());
-        const desiredName = document.getElementById("settingsRepo").value.trim() || "novellum-vault";
-        const { owner, repo } = await createRepoForVault(desiredName);
-        // Re-render first (it rebuilds the whole view, wiping any message set beforehand),
-        // then set the status message on the freshly-created element.
+        await createRepoForVault(DEFAULT_VAULT_REPO_NAME);
+        state.pendingOAuthVaultPick = null;
         await renderSettingsView(container, callbacks);
-        setStatus("settingsStatus", `Created ${owner}/${repo}.`, false);
       } catch (err) {
+        createVaultBtn.disabled = false;
         setStatus("settingsStatus", `Failed: ${err.message}`, true);
       }
+    };
+  }
+
+  const pickExistingBtn = document.getElementById("settingsPickExistingRepo");
+  if (pickExistingBtn) {
+    pickExistingBtn.onclick = async () => {
+      pickExistingBtn.disabled = true;
+      const holder = document.getElementById("settingsExistingRepoPicker");
+      holder.style.display = "block";
+      holder.innerHTML = `<div class="settings-status">Loading your repos&hellip;</div>`;
+      let repos;
+      try {
+        repos = await listMyRepos();
+      } catch (err) {
+        holder.innerHTML = `<div class="settings-status error">Couldn't load repos: ${escapeHtml(err.message)}</div>`;
+        return;
+      }
+      if (repos.length === 0) {
+        holder.innerHTML = `<div class="settings-status">No repos found on this account.</div>`;
+        return;
+      }
+      holder.innerHTML = `
+        <select id="settingsExistingRepoSelect">
+          ${repos
+            .map((r) => `<option value="${escapeHtml(r.owner)}/${escapeHtml(r.repo)}">${escapeHtml(r.owner)}/${escapeHtml(r.repo)}${r.private ? "" : " (public)"}</option>`)
+            .join("")}
+        </select>
+        <button class="modal-btn done" id="settingsConnectExisting" style="margin-left:8px">Connect</button>
+      `;
+      document.getElementById("settingsConnectExisting").onclick = async () => {
+        const [owner, repo] = document.getElementById("settingsExistingRepoSelect").value.split("/");
+        setStatus("settingsStatus", "Checking repo…", false);
+        try {
+          await connectExistingVaultRepo(owner, repo);
+          state.pendingOAuthVaultPick = null;
+          await renderSettingsView(container, callbacks);
+        } catch (err) {
+          setStatus("settingsStatus", `Failed: ${err.message}`, true);
+        }
+      };
     };
   }
 
@@ -166,9 +146,6 @@ export async function renderSettingsView(container, callbacks) {
       // round trip before the first one's even rendered.
       syncNowBtn.disabled = true;
       setStatus("syncStatus", "Syncing…", false);
-      // Save whatever's currently in the fields first — otherwise a token typed but not yet
-      // explicitly saved would be silently ignored in favor of the last-persisted value.
-      await saveGithubSettings(readFields());
       const bookId = getActiveBookId();
       const { pushResult, pullResult } = await syncNow(bookId, { force: true });
       state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
@@ -209,9 +186,8 @@ export async function renderSettingsView(container, callbacks) {
   if (disconnectConfirmBtn) {
     disconnectConfirmBtn.onclick = async () => {
       await disconnectGithub();
-      guideOpenOverride = null;
       await renderSettingsView(container, callbacks);
-      setStatus("settingsStatus", "Disconnected. Set up a repo below to connect again.", false);
+      setStatus("settingsStatus", "Disconnected. Sign in with GitHub again to reconnect.", false);
     };
   }
 
@@ -300,48 +276,43 @@ export async function renderSettingsView(container, callbacks) {
   });
 }
 
-/** Not-yet-connected phase: the first-time setup guide plus the token/owner/repo form. */
-function renderSetupPhase(settings, guideOpen) {
+/** Shown right after a "Sign in with GitHub" redirect when the account's default vault repo
+ *  either doesn't exist yet or exists but failed the "is this actually a Novellum vault" check
+ *  (state.pendingOAuthVaultPick, set in main.js) — an explicit choice instead of guessing. */
+function renderVaultPickPhase({ login, blockedReason }) {
+  const explanation = blockedReason
+    ? escapeHtml(blockedReason)
+    : `No <strong>${escapeHtml(DEFAULT_VAULT_REPO_NAME)}</strong> repo found for this account yet.`;
   return `
-    <details class="settings-guide" id="settingsGuide" ${guideOpen ? "open" : ""}>
-      <summary>How to connect GitHub (first-time setup)</summary>
-      <ol>
-        <li>Click <strong>Create a token on GitHub</strong> below. It opens GitHub with the right permissions pre-filled — sign in if asked, pick an expiration, then click <strong>Generate token</strong> at the bottom of that page.</li>
-        <li>GitHub shows the new token once. Copy it there.</li>
-        <li>Come back here, click <strong>Paste</strong> next to the token field, then <strong>Save</strong>.</li>
-        <li>Fill in <strong>Owner</strong> (your GitHub username) and <strong>Repo</strong>. Click <strong>Create Repo</strong> if you don't have one yet, or <strong>Test Connection</strong> to check access to an existing one.</li>
-        <li>Click <strong>Sync Now</strong>. The token stays saved on this device, so this is a one-time setup.</li>
-      </ol>
-    </details>
-
     <div class="settings-section">
-      <div class="section-label">Personal Access Token</div>
-      <a class="settings-link" target="_blank" rel="noopener"
-         href="https://github.com/settings/tokens/new?scopes=repo&description=Novellum">Create a token on GitHub &rarr;</a>
-      <div class="token-row">
-        <input type="password" id="settingsToken" placeholder="ghp_..." value="${escapeHtml(settings.token || "")}">
-        <button class="tbtn" id="settingsTokenPaste" type="button">Paste</button>
-        <button class="tbtn" id="settingsTokenShow" type="button">Show</button>
+      <div class="section-label">Choose your vault</div>
+      <div class="settings-status" style="margin:0 0 10px">
+        Signed in as <strong>${escapeHtml(login)}</strong>. ${explanation}
+        Create a new vault, or connect an existing repository instead.
       </div>
+      <div class="settings-actions-row">
+        <button class="modal-btn done" id="settingsCreateVault">Create &ldquo;${escapeHtml(DEFAULT_VAULT_REPO_NAME)}&rdquo;</button>
+        <button class="tbtn" id="settingsPickExistingRepo">Choose an existing repo&hellip;</button>
+      </div>
+      <div id="settingsExistingRepoPicker" style="display:none;margin-top:10px"></div>
+      <div id="settingsStatus" class="settings-status"></div>
     </div>
+  `;
+}
 
-    <div class="settings-section settings-row">
-      <div>
-        <div class="section-label">Owner</div>
-        <input type="text" id="settingsOwner" placeholder="your-github-username" value="${escapeHtml(settings.owner || "")}">
+/** Not-yet-connected phase: the only way to connect is "Sign in with GitHub" — it detects the
+ *  account and finds/creates the vault repo automatically, so there's no token or repo name to
+ *  fill in by hand. */
+function renderSetupPhase() {
+  return `
+    <div class="settings-section">
+      <div class="section-label">Connect GitHub</div>
+      <div class="settings-status" style="margin:0 0 10px">
+        Sign in with your GitHub account to sync your books!
       </div>
-      <div>
-        <div class="section-label">Repo</div>
-        <input type="text" id="settingsRepo" placeholder="novellum-vault" value="${escapeHtml(settings.repo || "")}">
-      </div>
+      <button class="modal-btn done" id="settingsOAuthLogin">Sign in with GitHub</button>
+      <div id="settingsStatus" class="settings-status"></div>
     </div>
-
-    <div class="settings-actions-row">
-      <button class="modal-btn done" id="settingsSave">Save</button>
-      <button class="tbtn" id="settingsTest">Test Connection</button>
-      <button class="tbtn" id="settingsCreateRepo">Create Repo</button>
-    </div>
-    <div id="settingsStatus" class="settings-status"></div>
   `;
 }
 

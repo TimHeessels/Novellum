@@ -4,7 +4,8 @@ import { initApp, render, refreshSyncStatusUI } from "./ui.js";
 import { data, getSceneAndChapter } from "./model.js";
 import { state } from "./state.js";
 import { DEFAULT_BOOK_ID, listBooks, loadBook, setActiveBookId, persistNow, flushSaveNow, loadUiPrefs } from "./persistence.js";
-import { ensureBookBootstrapped, syncNow } from "./sync-engine.js";
+import { ensureBookBootstrapped, syncNow, beginOAuthLogin, connectExistingVaultRepo, DEFAULT_VAULT_REPO_NAME } from "./sync-engine.js";
+import { consumePendingOAuthResult } from "./github-oauth.js";
 
 const AUTO_SYNC_INTERVAL_MS = 60000;
 const EDITABLE_SELECTOR = '[contenteditable="true"]';
@@ -26,7 +27,43 @@ function showFatalError(err) {
     </div>`;
 }
 
+/** Finishes a "Sign in with GitHub" redirect if this page load is one — the token/error worker.js
+ *  left in the URL fragment. Runs before anything else in boot() so the settings view (restored
+ *  from uiPrefs, since that's where the user was when they clicked the button) already reflects
+ *  the outcome by the time it first renders.
+ *
+ *  Only auto-connects when this account's default vault already exists AND passes the "is this
+ *  actually a Novellum vault" check — first-time sign-in (no vault yet) or a name collision with
+ *  an unrelated repo both fall through to state.pendingOAuthVaultPick, which settings-ui.js
+ *  renders as an explicit create-or-choose prompt instead of guessing. */
+async function consumeOAuthRedirectIfAny() {
+  let token;
+  try {
+    token = consumePendingOAuthResult();
+  } catch (err) {
+    state.oauthLoginError = err.message;
+    return;
+  }
+  if (!token) return;
+
+  try {
+    const { login } = await beginOAuthLogin(token);
+    try {
+      await connectExistingVaultRepo(login, DEFAULT_VAULT_REPO_NAME);
+    } catch (err) {
+      // A real connection problem (bad token scope, rate limit, network) is a login failure, not
+      // a "pick a vault" situation — only 'notfound' and the usability check land on the picker.
+      if (err.type && err.type !== "notfound") throw err;
+      state.pendingOAuthVaultPick = { login, blockedReason: err.type === "notfound" ? null : err.message };
+      state.view = "settings";
+    }
+  } catch (err) {
+    state.oauthLoginError = `Signed in, but couldn't verify the account: ${err.message}`;
+  }
+}
+
 async function boot() {
+  await consumeOAuthRedirectIfAny();
   const uiPrefs = loadUiPrefs();
   const existingBooks = await listBooks();
   let bookId;
@@ -51,6 +88,10 @@ async function boot() {
   state.books = await listBooks();
   state.activeBookId = bookId;
   applyRestoredUiPrefs(uiPrefs);
+  // Applied after uiPrefs, deliberately overriding a restored view: a just-completed OAuth
+  // redirect needs the settings view open regardless of where the user was before leaving for
+  // GitHub (normally the same "settings" spot uiPrefs already restored, but not guaranteed).
+  if (state.pendingOAuthVaultPick || state.oauthLoginError) state.view = "settings";
 
   initApp();
 

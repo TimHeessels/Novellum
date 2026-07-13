@@ -27,4 +27,12 @@ export const state = {
   // manual Sync Now) — covers both "no token yet" and "token/repo present but the connection is
   // actually failing" (bad token, renamed/deleted repo, rate limit). Null once a sync goes through.
   syncPauseReason: null,
+  // Set once, right after a "Sign in with GitHub" redirect lands back on boot() — shown on the
+  // settings view's next render, then cleared, rather than persisted.
+  oauthLoginError: null,
+  // Set after sign-in when the account's default vault repo doesn't exist yet, or exists but
+  // isn't a usable vault: { login, blockedReason }. blockedReason is null for "doesn't exist yet"
+  // (nothing to explain) and a message for "exists but has other content". Settings renders this
+  // as a create-or-choose prompt instead of guessing; cleared once the user resolves it.
+  pendingOAuthVaultPick: null,
 };

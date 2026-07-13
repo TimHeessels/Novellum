@@ -2,11 +2,16 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "novellum",
   "compatibility_date": "2026-07-13",
+  "main": "worker.js",
   "observability": {
     "enabled": true
   },
   "assets": {
-    "directory": "."
+    "directory": ".",
+    "binding": "ASSETS"
+  },
+  "vars": {
+    "GITHUB_CLIENT_ID": "Ov23li1PpWIx9plqqPyY"
   },
   "compatibility_flags": [
     "nodejs_compat"
