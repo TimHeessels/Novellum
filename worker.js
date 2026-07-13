@@ -10,6 +10,17 @@ export default {
     if (url.pathname === "/api/auth/callback") {
       return handleOAuthCallback(url, env);
     }
+    // TEMPORARY — remove once the "client_id and/or client_secret passed are incorrect" issue is
+    // resolved. Reports whether GITHUB_CLIENT_SECRET is actually bound and its length, never the
+    // value itself, so we can tell "not deployed to this Worker" apart from "wrong value" without
+    // ever exposing the secret.
+    if (url.pathname === "/api/auth/debug") {
+      return Response.json({
+        clientId: env.GITHUB_CLIENT_ID || null,
+        hasSecret: !!env.GITHUB_CLIENT_SECRET,
+        secretLength: (env.GITHUB_CLIENT_SECRET || "").length,
+      });
+    }
     return env.ASSETS.fetch(request);
   },
 };
