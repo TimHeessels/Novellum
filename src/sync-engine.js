@@ -464,6 +464,14 @@ async function applyRemoteManifest(bookId, remoteManifest, remoteByPath, token, 
   const localScenes = await dbGetAllByIndex("scenes", "bookId", bookId);
   const localScenesById = new Map(localScenes.map((s) => [s.id, s]));
 
+  // The manifest is also the only place a book's title travels between devices — push
+  // (buildManifest) has always included it, but this adoption path used to only ever touch
+  // chapters/scenes, so a title changed elsewhere never made it back down here.
+  const bookRow = await dbGet("books", bookId);
+  if (bookRow && remoteManifest.title && bookRow.title !== remoteManifest.title) {
+    await dbPut("books", { ...bookRow, title: remoteManifest.title, updatedAt: now });
+  }
+
   const newChapterRows = [];
   for (const [chIndex, ch] of remoteManifest.chapters.entries()) {
     newChapterRows.push({ id: ch.id, bookId, title: ch.title, order: chIndex, updatedAt: now });

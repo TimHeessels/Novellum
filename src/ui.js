@@ -1071,9 +1071,12 @@ function handleSplitClick() {
   if (!info) return;
   const parts = extractRangeParts(info.el, info.range);
   if (!parts.selectedText.trim()) return;
-  if (!parts.beforeText.trim() && !parts.afterText.trim()) return; // whole scene selected, nothing to split
+  const hasBefore = !!parts.beforeText.trim();
+  const hasAfter = !!parts.afterText.trim();
+  if (!hasBefore && !hasAfter) return; // whole scene selected, nothing to split
 
-  if (parts.afterText.trim()) {
+  if (hasBefore && hasAfter) {
+    // Genuinely in the middle — text survives on both sides, so this is a 3-way split.
     state.splitConfirm = {
       chapterId: info.chapter.id,
       sceneId: info.scene.id,
@@ -1083,6 +1086,11 @@ function handleSplitClick() {
     };
     hideSelectionToolbar();
     renderModal();
+  } else if (hasAfter) {
+    // Selection starts at the very beginning of the scene (nothing before it) — a clean 2-way
+    // split, just like the "selection at the end" case below, but mirrored: this scene keeps
+    // the selected (opening) text and the remainder becomes the new next scene.
+    performSplit(info.chapter.id, info.scene.id, parts.selectedHtml, parts.afterHtml, null);
   } else {
     performSplit(info.chapter.id, info.scene.id, parts.beforeHtml, parts.selectedHtml, null);
   }
@@ -1162,6 +1170,28 @@ function handleSelectionChange() {
   const info = getManuscriptSelectionInfo();
   if (!info) { hideSelectionToolbar(); return; }
   showSelectionToolbar(info);
+}
+
+let selectionScrollRaf = null;
+
+/** The toolbar is `position:fixed`, so its top/left are only ever set once, at show time, from
+ *  the selection's viewport-relative rect (see positionSelectionToolbar) — scrolling the center
+ *  panel moves the underlying text without moving the toolbar, leaving it hovering over the
+ *  wrong line. Previously this was "solved" by hiding the toolbar on every scroll, but that also
+ *  killed it the instant a long drag-select auto-scrolled the panel, making it impossible to
+ *  select anything longer than a screenful. Reposition instead: the Range itself hasn't changed,
+ *  only its rect (getBoundingClientRect is always live), so just re-read that and move the
+ *  toolbar to match. Only hide if the selection is actually gone. rAF-throttled like the
+ *  scroll-spy above — scroll fires far more often than a reposition needs to happen. */
+function handleSelectionScroll() {
+  if (selectionToolbarEl.style.display === "none") return;
+  if (selectionScrollRaf !== null) return;
+  selectionScrollRaf = requestAnimationFrame(() => {
+    selectionScrollRaf = null;
+    const info = getManuscriptSelectionInfo();
+    if (!info) { hideSelectionToolbar(); return; }
+    positionSelectionToolbar(info.range.getBoundingClientRect());
+  });
 }
 
 function addChapterSceneButtons() {
@@ -1622,7 +1652,7 @@ export function initApp() {
 
   try { document.execCommand("defaultParagraphSeparator", false, "p"); } catch { /* unsupported in some browsers, non-fatal */ }
   document.addEventListener("selectionchange", handleSelectionChange);
-  centerPanelEl.addEventListener("scroll", hideSelectionToolbar);
+  centerPanelEl.addEventListener("scroll", handleSelectionScroll);
   centerPanelEl.addEventListener("scroll", handleCenterScrollSpy);
 
   render();
