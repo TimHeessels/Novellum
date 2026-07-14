@@ -362,6 +362,18 @@ async function pushOne(token, owner, repo, entry) {
   }
 }
 
+/** The recursive git-trees endpoint reconcileBook uses to spot remote changes (getBookRemoteTree)
+ *  can occasionally still lag a moment behind a commit that was just made — `justPushed` catches
+ *  that within the same sync cycle, but if the lag outlasts a full cycle, the next reconcileBook
+ *  can mistake its own recent push for a colliding remote change whenever the same target was
+ *  edited again since. The Contents API (getFile) is authoritative for a single path and doesn't
+ *  share that lag, so it's used here as a tie-breaker before ever declaring a real conflict. */
+async function confirmRemoteSha(token, owner, repo, path, knownSha) {
+  if (!knownSha) return false;
+  const remote = await gh.getFile(token, owner, repo, path).catch(() => null);
+  return !!remote && remote.sha === knownSha;
+}
+
 async function recordConflict(token, owner, repo, entry) {
   const path = pathForEntry(entry);
   let remote = null;
@@ -414,7 +426,15 @@ export async function drainOutbox(onProgress, { force = false } = {}) {
 
     try {
       await pushOne(token, owner, repo, entry);
-      await dbDelete("outbox", entry.key);
+      // Only clear the entry if it's still the same one we just pushed — a keystroke can
+      // re-enqueue this same key (enqueueSync isn't debounced) while the PUT above was in
+      // flight. Deleting unconditionally would wipe out that fresher edit's dirty marker even
+      // though its content was never actually sent, silently delaying it until something else
+      // happens to touch this scene again.
+      const current = await dbGet("outbox", entry.key);
+      if (current && current.enqueuedAt === entry.enqueuedAt) {
+        await dbDelete("outbox", entry.key);
+      }
       pushed += 1;
       pushedTargets.add(`${entry.kind}:${entry.targetId}`);
       if (onProgress) onProgress({ type: "pushed", entry });
@@ -552,8 +572,10 @@ export async function reconcileBook(bookId, justPushed = new Set()) {
   const meta = (await dbGet("manifestMeta", bookId)) || { bookId };
   if (manifestSha && manifestSha !== meta.manifestSha && !justPushed.has(`manifest:${bookId}`)) {
     if (dirtyKeys.has(`manifest:${bookId}`)) {
-      await recordConflict(token, owner, repo, { key: outboxKey(bookId, "manifest", bookId), bookId, kind: "manifest", targetId: bookId });
-      conflicts += 1;
+      if (!(await confirmRemoteSha(token, owner, repo, `${prefix}manifest.json`, meta.manifestSha))) {
+        await recordConflict(token, owner, repo, { key: outboxKey(bookId, "manifest", bookId), bookId, kind: "manifest", targetId: bookId });
+        conflicts += 1;
+      }
     } else {
       const blob = await gh.getBlob(token, owner, repo, manifestSha);
       await applyRemoteManifest(bookId, JSON.parse(blob.content), remoteByPath, token, owner, repo);
@@ -566,8 +588,10 @@ export async function reconcileBook(bookId, justPushed = new Set()) {
   const meta2 = (await dbGet("manifestMeta", bookId)) || { bookId };
   if (bibleSha && bibleSha !== meta2.bibleSha && !justPushed.has(`bible:${bookId}`)) {
     if (dirtyKeys.has(`bible:${bookId}`)) {
-      await recordConflict(token, owner, repo, { key: outboxKey(bookId, "bible", bookId), bookId, kind: "bible", targetId: bookId });
-      conflicts += 1;
+      if (!(await confirmRemoteSha(token, owner, repo, `${prefix}bible.json`, meta2.bibleSha))) {
+        await recordConflict(token, owner, repo, { key: outboxKey(bookId, "bible", bookId), bookId, kind: "bible", targetId: bookId });
+        conflicts += 1;
+      }
     } else {
       const blob = await gh.getBlob(token, owner, repo, bibleSha);
       await applyRemoteBible(bookId, JSON.parse(blob.content));
@@ -589,8 +613,10 @@ export async function reconcileBook(bookId, justPushed = new Set()) {
     const knownSha = syncById.get(sc.id)?.remoteSha;
     if (!remoteSha || remoteSha === knownSha || justPushed.has(`scene:${sc.id}`)) continue;
     if (dirtyKeys.has(`scene:${sc.id}`)) {
-      await recordConflict(token, owner, repo, { key: outboxKey(bookId, "scene", sc.id), bookId, kind: "scene", targetId: sc.id });
-      conflicts += 1;
+      if (!(await confirmRemoteSha(token, owner, repo, path, knownSha))) {
+        await recordConflict(token, owner, repo, { key: outboxKey(bookId, "scene", sc.id), bookId, kind: "scene", targetId: sc.id });
+        conflicts += 1;
+      }
     } else {
       const blob = await gh.getBlob(token, owner, repo, remoteSha);
       const parsed = markdownToScene(blob.content);

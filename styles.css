@@ -183,7 +183,11 @@ button{font-family:inherit}
 .tbtn-inline:hover{color:var(--text)}
 
 .overview-view{max-width:1400px;margin:0 auto;padding:12px 0 60px}
-.overview-header{display:flex;justify-content:space-between;align-items:center;margin:0 0 26px}
+.overview-header{
+  display:flex;justify-content:space-between;align-items:center;
+  position:sticky;top:-45px;z-index:2;background:var(--bg);
+  margin:0 -60px 26px;padding:12px 60px;
+}
 .overview-title{font:600 20px 'Lora',serif;color:var(--text-strong);margin:0}
 
 .overview-todo-toggle{display:flex;align-items:center;gap:9px;cursor:pointer;padding:4px 6px;border-radius:8px;user-select:none}

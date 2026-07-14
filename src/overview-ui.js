@@ -31,7 +31,7 @@ function chapterSectionHtml(ch) {
   const scenesHtml = ch.scenes.length
     ? ch.scenes.map((sc) => sceneCardHtml(ch, sc)).join("")
     : `<div class="no-scene">No scenes in this chapter yet.</div>`;
-  const chapterHasTodos = ch.scenes.some((sc) => sc.todos.length > 0);
+  const chapterHasTodos = ch.scenes.some((sc) => sc.todos.some((t) => !t.done));
   return `
     <section class="overview-chapter">
       <div class="overview-chapter-title ${chapterHasTodos ? "has-todos" : ""}" data-chapter-id="${ch.id}">${escapeHtml(chapterLabel(ch))}</div>
@@ -45,7 +45,7 @@ function sceneCardHtml(ch, sc) {
     ? `<div class="overview-scene-summary">${escapeHtml(sc.summary)}</div>`
     : "";
   const todosHtml = sc.todos.length ? todoListHtml(sc.todos) : "";
-  const hasTodos = sc.todos.length > 0;
+  const hasTodos = sc.todos.some((t) => !t.done);
   return `
     <div class="overview-scene-card ${hasTodos ? "has-todos" : ""}" data-chapter-id="${ch.id}" data-scene-id="${sc.id}">
       <div class="overview-scene-title">${escapeHtml(sceneLabel(ch, sc))}</div>
