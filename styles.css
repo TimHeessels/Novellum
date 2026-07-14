@@ -206,6 +206,7 @@ button{font-family:inherit}
 .overview-chapters{display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));column-gap:24px;row-gap:48px;align-items:start}
 .overview-chapters.highlight-todos .overview-scene-card:not(.has-todos){opacity:.55}
 .overview-chapters.highlight-todos .overview-scene-card.has-todos{border-color:oklch(0.42 0.01 75)}
+.overview-chapters.highlight-todos .overview-chapter-title:not(.has-todos){opacity:.55}
 .overview-chapter{min-width:0}
 .overview-chapter-title{
   font:700 17px 'Lora',serif;color:var(--text-strong);cursor:pointer;border-radius:6px;

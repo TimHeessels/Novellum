@@ -31,9 +31,10 @@ function chapterSectionHtml(ch) {
   const scenesHtml = ch.scenes.length
     ? ch.scenes.map((sc) => sceneCardHtml(ch, sc)).join("")
     : `<div class="no-scene">No scenes in this chapter yet.</div>`;
+  const chapterHasTodos = ch.scenes.some((sc) => sc.todos.length > 0);
   return `
     <section class="overview-chapter">
-      <div class="overview-chapter-title" data-chapter-id="${ch.id}">${escapeHtml(chapterLabel(ch))}</div>
+      <div class="overview-chapter-title ${chapterHasTodos ? "has-todos" : ""}" data-chapter-id="${ch.id}">${escapeHtml(chapterLabel(ch))}</div>
       <div class="overview-scene-list">${scenesHtml}</div>
     </section>
   `;

@@ -15,7 +15,7 @@ import {
 import { enqueueSync, ensureBookBootstrapped, reconcileBook, getSyncStatus, withSyncLock } from "./sync-engine.js";
 import { renderSettingsView } from "./settings-ui.js";
 import { renderOverviewView } from "./overview-ui.js";
-import { exportManuscript } from "./export.js";
+import { exportManuscript, exportEpub } from "./export.js";
 import { buildChaptersFromMarkdown } from "./import.js";
 
 function markDirty(kind, targetId) {
@@ -901,6 +901,8 @@ function renderLeftPanel() {
         <div class="section-label" style="margin-top:24px">Export</div>
         <div class="settings-status" style="margin:0 0 10px">Download the full manuscript as a nicely formatted, printable document.</div>
         <button class="tbtn" data-action="export-manuscript">Export Manuscript</button>
+        <div class="settings-status" style="margin:10px 0 10px">Download the full manuscript as an EPUB e-book file.</div>
+        <button class="tbtn" data-action="export-epub">Export EPUB</button>
 
         <div class="section-label" style="margin-top:24px">Import</div>
         <div class="settings-status" style="margin:0 0 10px">Import a manuscript from Markdown.</div>
@@ -958,6 +960,8 @@ function renderLeftPanel() {
   if (addBibleBtn) addBibleBtn.onclick = () => openBibleModal(addBibleBtn.dataset.bibleKind, null);
   const exportBtnEl = leftPanelEl.querySelector('[data-action="export-manuscript"]');
   if (exportBtnEl) exportBtnEl.onclick = () => exportManuscript(data);
+  const exportEpubBtnEl = leftPanelEl.querySelector('[data-action="export-epub"]');
+  if (exportEpubBtnEl) exportEpubBtnEl.onclick = () => exportEpub(data);
   const importBtnEl = leftPanelEl.querySelector('[data-action="import-manuscript"]');
   const importFileEl = document.getElementById("importMdFile");
   if (importBtnEl && importFileEl) {
