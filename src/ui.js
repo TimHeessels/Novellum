@@ -252,11 +252,10 @@ function openOverview() {
   render();
 }
 
-/** Re-opens the left sidebar on a given tab from its collapsed state. If overview is currently
- *  showing, this also exits it — opening the manuscript tree while overview is still the center
- *  content would just show two overlapping ways to navigate at once. */
-function openLeftTabFromCollapsed(tab) {
-  state.leftTab = tab;
+/** Re-opens the left sidebar from its collapsed state, on whichever tab was last active. If
+ *  overview is currently showing, this also exits it — opening the manuscript tree while overview
+ *  is still the center content would just show two overlapping ways to navigate at once. */
+function openLeftFromCollapsed() {
   if (state.view === "overview") {
     state.view = resolveViewAfterOverview();
     state.rightOpen = state.rightOpenBeforeOverview;
@@ -543,6 +542,14 @@ function openSettings() {
   render();
 }
 
+const VIEW_MODE_ICON = {
+  scene: `<svg viewBox="0 0 448 512" fill="currentColor"><path d="M288 64c0 17.7-14.3 32-32 32L32 96C14.3 96 0 81.7 0 64S14.3 32 32 32l224 0c17.7 0 32 14.3 32 32zm0 256c0 17.7-14.3 32-32 32L32 352c-17.7 0-32-14.3-32-32s14.3-32 32-32l224 0c17.7 0 32 14.3 32 32zM0 192c0-17.7 14.3-32 32-32l384 0c17.7 0 32 14.3 32 32s-14.3 32-32 32L32 224c-17.7 0-32-14.3-32-32zM448 448c0 17.7-14.3 32-32 32L32 480c-17.7 0-32-14.3-32-32s14.3-32 32-32l384 0c17.7 0 32 14.3 32 32z"/></svg>`,
+  chapter: `<svg viewBox="0 0 512 512" fill="currentColor"><path d="M40 48C26.7 48 16 58.7 16 72l0 48c0 13.3 10.7 24 24 24l48 0c13.3 0 24-10.7 24-24l0-48c0-13.3-10.7-24-24-24L40 48zM192 64c-17.7 0-32 14.3-32 32s14.3 32 32 32l288 0c17.7 0 32-14.3 32-32s-14.3-32-32-32L192 64zm0 160c-17.7 0-32 14.3-32 32s14.3 32 32 32l288 0c17.7 0 32-14.3 32-32s-14.3-32-32-32l-288 0zm0 160c-17.7 0-32 14.3-32 32s14.3 32 32 32l288 0c17.7 0 32-14.3 32-32s-14.3-32-32-32l-288 0zM16 232l0 48c0 13.3 10.7 24 24 24l48 0c13.3 0 24-10.7 24-24l0-48c0-13.3-10.7-24-24-24l-48 0c-13.3 0-24 10.7-24 24zM40 368c-13.3 0-24 10.7-24 24l0 48c0 13.3 10.7 24 24 24l48 0c13.3 0 24-10.7 24-24l0-48c0-13.3-10.7-24-24-24l-48 0z"/></svg>`,
+  full: `<svg viewBox="0 0 576 512" fill="currentColor"><path d="M249.6 471.5c10.8 3.8 22.4-4.1 22.4-15.5l0-377.4c0-4.2-1.6-8.4-5-11C247.4 52 202.4 32 144 32C93.5 32 46.3 45.3 18.1 56.1C6.8 60.5 0 71.7 0 83.8L0 454.1c0 11.9 12.8 20.2 24.1 16.5C55.6 460.1 105.5 448 144 448c33.9 0 79 14 105.6 23.5zm76.8 0C353 462 398.1 448 432 448c38.5 0 88.4 12.1 119.9 22.6c11.3 3.8 24.1-4.6 24.1-16.5l0-370.3c0-12.1-6.8-23.3-18.1-27.6C529.7 45.3 482.5 32 432 32c-58.4 0-103.4 20-123 35.6c-3.3 2.6-5 6.8-5 11L304 456c0 11.4 11.7 19.3 22.4 15.5z"/></svg>`,
+  overview: `<svg viewBox="0 0 512 512" fill="currentColor"><path d="M64 32C28.7 32 0 60.7 0 96L0 416c0 35.3 28.7 64 64 64l384 0c35.3 0 64-28.7 64-64l0-320c0-35.3-28.7-64-64-64L64 32zm88 64l0 64-88 0 0-64 88 0zm56 0l88 0 0 64-88 0 0-64zm240 0l0 64-88 0 0-64 88 0zM64 224l88 0 0 64-88 0 0-64zm232 0l0 64-88 0 0-64 88 0zm64 0l88 0 0 64-88 0 0-64zM152 352l0 64-88 0 0-64 88 0zm56 0l88 0 0 64-88 0 0-64zm240 0l0 64-88 0 0-64 88 0z"/></svg>`,
+};
+const VIEW_MODE_LABEL = { scene: "Current scene", chapter: "Current chapter", full: "Full manuscript", overview: "Overview" };
+
 function renderTopbar() {
   const currentTitle = data.title || "Untitled Book";
   document.title = `${currentTitle} — Novellum`;
@@ -553,11 +560,14 @@ function renderTopbar() {
     </div>
     <div class="view-switcher">
       <div class="view-mode-toggle">
-        <button class="tbtn ${state.view === "scene" ? "active" : ""}" id="viewModeScene">Scene</button>
-        <button class="tbtn ${state.view === "chapter" ? "active" : ""}" id="viewModeChapter">Chapter</button>
-        <button class="tbtn ${state.view === "full" ? "active" : ""}" id="viewModeFull">Full</button>
+        ${["scene", "chapter", "full", "overview"]
+          .map((mode) => {
+            const active = state.view === mode;
+            const id = mode === "overview" ? "topbarOverviewBtn" : `viewMode${mode[0].toUpperCase()}${mode.slice(1)}`;
+            return `<button class="tbtn ${active ? "active" : ""}" id="${id}">${VIEW_MODE_ICON[mode]}<span class="tab-label">${VIEW_MODE_LABEL[mode]}</span></button>`;
+          })
+          .join("")}
       </div>
-      <button class="tbtn ${state.view === "overview" ? "active" : ""}" id="topbarOverviewBtn">Overview</button>
     </div>
     <div class="topbar-actions">
       <button class="sync-status-badge" id="syncStatusBadge" title="Open sync settings">&hellip;</button>
@@ -801,19 +811,28 @@ async function handleDeleteBook(bookId) {
 
 /* ---- Left panel ---- */
 
+const LEFT_TAB_ICON = {
+  manuscript: `<svg viewBox="0 0 384 512" fill="currentColor"><path d="M64 0C28.7 0 0 28.7 0 64L0 448c0 35.3 28.7 64 64 64l256 0c35.3 0 64-28.7 64-64l0-288-128 0c-17.7 0-32-14.3-32-32L224 0 64 0zM256 0l0 128 128 0L256 0zM112 256l160 0c8.8 0 16 7.2 16 16s-7.2 16-16 16l-160 0c-8.8 0-16-7.2-16-16s7.2-16 16-16zm0 64l160 0c8.8 0 16 7.2 16 16s-7.2 16-16 16l-160 0c-8.8 0-16-7.2-16-16s7.2-16 16-16zm0 64l160 0c8.8 0 16 7.2 16 16s-7.2 16-16 16l-160 0c-8.8 0-16-7.2-16-16s7.2-16 16-16z"/></svg>`,
+  bible: `<svg viewBox="0 0 384 512" fill="currentColor"><path d="M0 48V487.7C0 501.1 10.9 512 24.3 512c5 0 9.9-1.5 14-4.4L192 400 345.7 507.6c4.1 2.9 9 4.4 14 4.4c13.4 0 24.3-10.9 24.3-24.3V48c0-26.5-21.5-48-48-48H48C21.5 0 0 21.5 0 48z"/></svg>`,
+  book: `<svg viewBox="0 0 512 512" fill="currentColor"><path d="M495.9 166.6c3.2 8.7 .5 18.4-6.4 24.6l-43.3 39.4c1.1 8.3 1.7 16.8 1.7 25.4s-.6 17.1-1.7 25.4l43.3 39.4c6.9 6.2 9.6 15.9 6.4 24.6c-4.4 11.9-9.7 23.3-15.8 34.3l-4.7 8.1c-6.6 11-14 21.4-22.1 31.2c-5.9 7.2-15.7 9.6-24.5 6.8l-55.7-17.7c-13.4 10.3-28.2 18.9-44 25.4l-12.5 57.1c-2 9.1-9 16.3-18.2 17.8c-13.8 2.3-28 3.5-42.5 3.5s-28.7-1.2-42.5-3.5c-9.2-1.5-16.2-8.7-18.2-17.8l-12.5-57.1c-15.8-6.5-30.6-15.1-44-25.4L83.1 425.9c-8.8 2.8-18.6 .3-24.5-6.8c-8.1-9.8-15.5-20.2-22.1-31.2l-4.7-8.1c-6.1-11-11.4-22.4-15.8-34.3c-3.2-8.7-.5-18.4 6.4-24.6l43.3-39.4C64.6 273.1 64 264.6 64 256s.6-17.1 1.7-25.4L22.4 191.2c-6.9-6.2-9.6-15.9-6.4-24.6c4.4-11.9 9.7-23.3 15.8-34.3l4.7-8.1c6.6-11 14-21.4 22.1-31.2c5.9-7.2 15.7-9.6 24.5-6.8l55.7 17.7c13.4-10.3 28.2-18.9 44-25.4l12.5-57.1c2-9.1 9-16.3 18.2-17.8C227.3 1.2 241.5 0 256 0s28.7 1.2 42.5 3.5c9.2 1.5 16.2 8.7 18.2 17.8l12.5 57.1c15.8 6.5 30.6 15.1 44 25.4l55.7-17.7c8.8-2.8 18.6-.3 24.5 6.8c8.1 9.8 15.5 20.2 22.1 31.2l4.7 8.1c6.1 11 11.4 22.4 15.8 34.3zM256 336a80 80 0 1 0 0-160 80 80 0 1 0 0 160z"/></svg>`,
+};
+const LEFT_TAB_LABEL = { manuscript: "Manuscript layout", bible: "Story Bible", book: "Book settings" };
+
 function renderLeftPanel() {
+  if (state.view === "overview") {
+    leftPanelEl.style.display = "none";
+    leftHandleEl.style.display = "none";
+    leftPanelEl.innerHTML = "";
+    return;
+  }
+  leftPanelEl.style.display = "";
+
   if (!state.leftOpen) {
     leftPanelEl.style.width = "40px";
     leftPanelEl.style.padding = "16px 0 0";
     leftHandleEl.style.display = "none";
-    leftPanelEl.innerHTML = `
-      <button class="collapsed-tab left-collapsed ${state.leftTab === "manuscript" ? "active" : ""}" data-collapsed-tab="manuscript">&rsaquo; Manuscript</button>
-      <button class="collapsed-tab left-collapsed ${state.leftTab === "bible" ? "active" : ""}" data-collapsed-tab="bible">&rsaquo; Story Bible</button>
-      <button class="collapsed-tab left-collapsed ${state.leftTab === "book" ? "active" : ""}" data-collapsed-tab="book">&rsaquo; Book</button>
-    `;
-    leftPanelEl.querySelectorAll("[data-collapsed-tab]").forEach((el) => {
-      el.onclick = () => openLeftTabFromCollapsed(el.dataset.collapsedTab);
-    });
+    leftPanelEl.innerHTML = `<button class="collapsed-tab left-collapsed" id="leftShow">&rsaquo; Book Details</button>`;
+    document.getElementById("leftShow").onclick = openLeftFromCollapsed;
     return;
   }
 
@@ -907,9 +926,12 @@ function renderLeftPanel() {
   leftPanelEl.innerHTML = `
     <div class="left-head">
       <div class="left-tabs">
-        <button class="tbtn ${state.leftTab === "manuscript" ? "active" : ""}" data-left-tab="manuscript">Manuscript</button>
-        <button class="tbtn ${state.leftTab === "bible" ? "active" : ""}" data-left-tab="bible">Story Bible</button>
-        <button class="tbtn ${state.leftTab === "book" ? "active" : ""}" data-left-tab="book">Book</button>
+        ${["manuscript", "bible", "book"]
+          .map((tab) => {
+            const active = state.leftTab === tab;
+            return `<button class="tbtn ${active ? "active" : ""}" data-left-tab="${tab}" title="${LEFT_TAB_LABEL[tab]}">${LEFT_TAB_ICON[tab]}${active ? `<span class="tab-label">${LEFT_TAB_LABEL[tab]}</span>` : ""}</button>`;
+          })
+          .join("")}
       </div>
       <button class="panel-collapse-btn" id="leftHide" title="Collapse panel">&lsaquo;</button>
     </div>
@@ -1296,7 +1318,15 @@ function renderCenter() {
   }
 
   if (state.view === "overview") {
-    renderOverviewView(centerPanelEl, { onOpenChapter: openChapter, onOpenScene: openScene });
+    renderOverviewView(centerPanelEl, {
+      onOpenChapter: openChapter,
+      onOpenScene: openScene,
+      highlightTodos: state.overviewHighlightTodos,
+      onToggleHighlightTodos: () => {
+        state.overviewHighlightTodos = !state.overviewHighlightTodos;
+        renderCenter();
+      },
+    });
     return;
   }
 
@@ -1372,6 +1402,14 @@ function renderCenter() {
 /* ---- Right panel ---- */
 
 function renderRightPanel() {
+  if (state.view === "overview") {
+    rightPanelEl.style.display = "none";
+    rightHandleEl.style.display = "none";
+    rightPanelEl.innerHTML = "";
+    return;
+  }
+  rightPanelEl.style.display = "";
+
   if (!state.rightOpen) {
     rightPanelEl.style.width = "40px";
     rightPanelEl.style.padding = "16px 0 0";
@@ -1390,8 +1428,8 @@ function renderRightPanel() {
   if (!sc) {
     rightPanelEl.innerHTML = `
       <div class="right-head">
+        <button class="panel-collapse-btn" id="rightHide" title="Collapse panel">&rsaquo;</button>
         <span class="right-label">Scene Details</span>
-        <button class="tbtn" id="rightHide" style="background:transparent;color:var(--text-muted);padding:4px 6px">Hide &rsaquo;</button>
       </div>
       <div class="no-scene">Click into a scene's text to see its details here.</div>
     `;
@@ -1412,8 +1450,8 @@ function renderRightPanel() {
 
   rightPanelEl.innerHTML = `
     <div class="right-head">
+      <button class="panel-collapse-btn" id="rightHide" title="Collapse panel">&rsaquo;</button>
       <span class="right-label">Chapter ${chapterNumber(ch)} - Scene ${sceneNumber(ch, sc)}</span>
-      <button class="tbtn" id="rightHide" style="background:transparent;color:var(--text-muted);padding:4px 6px">Hide &rsaquo;</button>
     </div>
     <div class="summary-block">
       <div class="section-label">Title</div>

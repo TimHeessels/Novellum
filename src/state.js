@@ -4,6 +4,7 @@ import { data } from "./model.js";
 
 export const state = {
   view: "scene", // 'scene' | 'chapter' | 'full' | 'settings' | 'overview'
+  overviewHighlightTodos: false, // dims scene cards with no to-dos when on; resets to off on reload
   viewBeforeOverview: null, // view to restore to when navigating away from an overview click
   leftOpenBeforeOverview: true,
   rightOpenBeforeOverview: true,

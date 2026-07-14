@@ -51,6 +51,8 @@ button{font-family:inherit}
 .topbar-actions{margin-left:auto;display:flex;gap:6px;align-items:center}
 .view-switcher{display:flex;gap:10px;margin-left:14px;align-items:center}
 .view-mode-toggle{display:flex;gap:2px;padding:2px;border:1px solid var(--border);border-radius:8px}
+.view-mode-toggle .tbtn{display:flex;align-items:center;gap:6px}
+.view-mode-toggle .tbtn svg{width:12px;height:auto;flex:none}
 
 .sync-status-badge{
   border:1px solid var(--border);background:transparent;cursor:pointer;border-radius:6px;
@@ -181,9 +183,29 @@ button{font-family:inherit}
 .tbtn-inline:hover{color:var(--text)}
 
 .overview-view{max-width:1400px;margin:0 auto;padding:12px 0 60px}
-.overview-title{font:600 20px 'Lora',serif;color:var(--text-strong);margin:0 0 26px}
+.overview-header{display:flex;justify-content:space-between;align-items:center;margin:0 0 26px}
+.overview-title{font:600 20px 'Lora',serif;color:var(--text-strong);margin:0}
+
+.overview-todo-toggle{display:flex;align-items:center;gap:9px;cursor:pointer;padding:4px 6px;border-radius:8px;user-select:none}
+.overview-todo-toggle:hover{background:var(--hover-bg-2)}
+.overview-todo-toggle-label{font-size:11.5px;font-weight:600;color:var(--text-muted)}
+.overview-todo-toggle:hover .overview-todo-toggle-label{color:var(--text-dim)}
+
+.toggle-switch{
+  position:relative;display:inline-block;flex:none;width:32px;height:20px;border-radius:999px;
+  background:oklch(0.93 0.005 75);border:1px solid oklch(0.82 0.005 75);
+  transition:background .15s,border-color .15s;
+}
+.toggle-switch .toggle-knob{
+  position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;
+  box-shadow:0 1px 2px oklch(0 0 0 / .35);transition:transform .15s ease;
+}
+.toggle-switch.on{background:var(--accent);border-color:var(--accent)}
+.toggle-switch.on .toggle-knob{transform:translateX(12px)}
 
 .overview-chapters{display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));column-gap:24px;row-gap:48px;align-items:start}
+.overview-chapters.highlight-todos .overview-scene-card:not(.has-todos){opacity:.55}
+.overview-chapters.highlight-todos .overview-scene-card.has-todos{border-color:oklch(0.42 0.01 75)}
 .overview-chapter{min-width:0}
 .overview-chapter-title{
   font:700 17px 'Lora',serif;color:var(--text-strong);cursor:pointer;border-radius:6px;
@@ -226,8 +248,9 @@ button{font-family:inherit}
 /* Left panel */
 .left-panel{flex:none;padding:16px 10px;overflow:auto;display:flex;flex-direction:column}
 .left-head{display:flex;justify-content:space-between;align-items:center;margin:2px 4px 12px}
-.left-tabs{display:flex;gap:4px;flex-wrap:wrap}
-.left-tabs .tbtn{padding:5px 8px;font-size:10.5px}
+.left-tabs{display:flex;gap:2px;flex-wrap:wrap;background:var(--hover-bg);border-radius:8px;padding:3px}
+.left-tabs .tbtn{display:flex;align-items:center;gap:6px;padding:6px 8px;font-size:10.5px;border-radius:6px}
+.left-tabs .tbtn svg{width:12px;height:auto;flex:none}
 
 .panel-collapse-btn{
   display:flex;align-items:center;justify-content:center;width:24px;height:24px;flex:none;

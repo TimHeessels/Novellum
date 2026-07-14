@@ -2,16 +2,23 @@
 
 import { data, escapeHtml, chapterLabel, sceneLabel } from "./model.js";
 
-export function renderOverviewView(container, { onOpenChapter, onOpenScene }) {
+export function renderOverviewView(container, { onOpenChapter, onOpenScene, highlightTodos, onToggleHighlightTodos }) {
   container.innerHTML = `
     <div class="overview-view">
-      <div class="overview-title">Overview</div>
-      <div class="overview-chapters">
+      <div class="overview-header">
+        <div class="overview-title">Overview</div>
+        <div class="overview-todo-toggle" id="overviewHighlightTodosBtn" role="switch" aria-checked="${highlightTodos}">
+          <span class="overview-todo-toggle-label">Highlight scenes with To-Dos</span>
+          <span class="toggle-switch ${highlightTodos ? "on" : ""}"><span class="toggle-knob"></span></span>
+        </div>
+      </div>
+      <div class="overview-chapters ${highlightTodos ? "highlight-todos" : ""}">
         ${data.chapters.length ? data.chapters.map(chapterSectionHtml).join("") : `<div class="no-scene">No chapters yet.</div>`}
       </div>
     </div>
   `;
 
+  document.getElementById("overviewHighlightTodosBtn").onclick = onToggleHighlightTodos;
   container.querySelectorAll(".overview-chapter-title").forEach((el) => {
     el.onclick = () => onOpenChapter(el.dataset.chapterId);
   });
@@ -37,8 +44,9 @@ function sceneCardHtml(ch, sc) {
     ? `<div class="overview-scene-summary">${escapeHtml(sc.summary)}</div>`
     : "";
   const todosHtml = sc.todos.length ? todoListHtml(sc.todos) : "";
+  const hasTodos = sc.todos.length > 0;
   return `
-    <div class="overview-scene-card" data-chapter-id="${ch.id}" data-scene-id="${sc.id}">
+    <div class="overview-scene-card ${hasTodos ? "has-todos" : ""}" data-chapter-id="${ch.id}" data-scene-id="${sc.id}">
       <div class="overview-scene-title">${escapeHtml(sceneLabel(ch, sc))}</div>
       ${summaryHtml}
       ${todosHtml}
