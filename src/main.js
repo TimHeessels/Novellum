@@ -1,14 +1,13 @@
 "use strict";
 
-import { initApp, render, refreshSyncStatusUI } from "./ui.js";
+import { initApp, refreshSyncStatusUI } from "./ui.js";
 import { data, getSceneAndChapter } from "./model.js";
 import { state } from "./state.js";
-import { DEFAULT_BOOK_ID, listBooks, loadBook, setActiveBookId, persistNow, flushSaveNow, loadUiPrefs, mergePulledIntoData } from "./persistence.js";
-import { ensureBookBootstrapped, syncNow, completeGithubAppLogin, withSyncLock } from "./sync-engine.js";
+import { DEFAULT_BOOK_ID, listBooks, loadBook, setActiveBookId, persistNow, flushSaveNow, loadUiPrefs } from "./persistence.js";
+import { ensureBookBootstrapped, checkRemoteChanges, completeGithubAppLogin } from "./sync-engine.js";
 import { consumePendingOAuthResult } from "./github-oauth.js";
 
-const AUTO_SYNC_INTERVAL_MS = 5 * 60000;
-const EDITABLE_SELECTOR = '[contenteditable="true"]';
+const REMOTE_CHECK_INTERVAL_MS = 5 * 60000;
 const RESTORABLE_VIEWS = ["scene", "chapter", "full", "overview", "settings"];
 
 /** boot() failing (or any error before the UI mounts) previously left a blank/black page with
@@ -98,46 +97,23 @@ async function boot() {
     flushSaveNow();
   });
 
-  // Closing the tab only guarantees a local IndexedDB flush (above) — not a push to GitHub. If
-  // there's anything still unpushed, warn before actually closing (the browser shows its own
-  // generic "changes may not be saved" text; the message string here is ignored by modern
-  // browsers but still required for the prompt to appear at all) and fire off a sync attempt in
-  // the same tick. Kicking it off here rather than waiting for the visibilitychange handler in
-  // startAutoSync() below gives it a head start: if the user gets the confirmation prompt, the
-  // page stays alive for as long as that dialog is up, which is extra time for the push to
-  // actually land before they decide. Not a guarantee — the browser can still tear the page down
-  // without ever showing the prompt, or before an in-flight request finishes — just the best a
-  // page-unload hook can do.
+  // Closing the tab only guarantees a local IndexedDB flush (above) — nothing pushes to GitHub
+  // automatically anymore, so warn if there's anything still unpushed (the browser shows its own
+  // generic "changes may not be saved" text; the message string here is ignored by modern browsers
+  // but still required for the prompt to appear at all). Purely a warning — it's on the user to
+  // hit Push first, same as leaving a regular git working copy with uncommitted changes.
   window.addEventListener("beforeunload", (e) => {
     if (!state.syncConfigured || !state.hasPendingSync) return;
-    runAutoSync();
     e.preventDefault();
     e.returnValue = "";
   });
 
-  // Background, after the first paint: push+pull anything that changed since last time. This
-  // doubles as the "is GitHub actually reachable" check on page load — `pushResult.pauseReason`
-  // covers both "no token yet" and "token/repo present but the connection is failing". Also what
-  // makes a fresh "Connect GitHub" feel instant — this fires right after boot, no separate
-  // manual "Sync Now" click needed.
-  //
-  // The refresh runs inside syncNow's onPulled hook, still holding the sync lock, rather than
-  // after this await returns — otherwise a background auto-sync tick could land in the gap and
-  // flush the still-stale in-memory `data` over whatever this pull just wrote to IndexedDB.
-  const { pushResult, pullResult } = await syncNow(bookId, {
-    onPulled: (pulledTargets) => (state.view === "settings" ? null : refreshActiveBookView(bookId, pulledTargets)),
-  });
-  state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
-  // If Settings happens to be the view showing (e.g. right after a fresh connect), refreshing
-  // just the topbar badge below isn't enough — the panel's own "last synced"/pending/conflict
-  // list only redraw when renderSettingsView actually re-runs, which a plain refreshSyncStatusUI()
-  // doesn't trigger. render() re-renders whichever view is current, Settings included.
-  if (state.view === "settings") {
-    render();
-  }
+  // Nothing pushes or pulls automatically — the topbar Push button and the "Pull latest" banner
+  // are the only things that ever touch GitHub's write/read-and-apply APIs. This just primes their
+  // initial state from whatever's already known locally (pending count, last push/pull time).
   refreshSyncStatusUI();
 
-  startAutoSync();
+  startRemoteChangeChecks(bookId);
 }
 
 /** Applies a saved "where you were" snapshot (src/persistence.js loadUiPrefs()) onto `state`
@@ -171,86 +147,30 @@ function applyRestoredUiPrefs(prefs) {
   }
 }
 
-/** Refreshes `data`/state from IndexedDB and re-renders — but only if `bookId` is still the
- *  one currently open (the user may have switched books while this was in flight). `pulledTargets`
- *  (from reconcileBook, via syncNow's onPulled) scopes the refresh to just what the pull actually
- *  changed — see mergePulledIntoData for why a blanket reload here isn't safe while the user might
- *  be mid-edit elsewhere in the same book. */
-async function refreshActiveBookView(bookId, pulledTargets) {
-  if (state.activeBookId !== bookId) return;
-  await mergePulledIntoData(bookId, pulledTargets);
-  if (!getSceneAndChapter(state.activeSceneId).scene) {
-    state.activeChapterId = data.chapters[0]?.id;
-    state.activeSceneId = data.chapters[0]?.scenes[0]?.id;
-  }
-  render();
-}
+let remoteCheckInFlight = false;
 
-function isActivelyEditing() {
-  return !!document.activeElement?.matches?.(EDITABLE_SELECTOR);
-}
-
-let autoSyncInFlight = false;
-let pendingViewRefresh = false;
-// Accumulates pulledTargets across possibly more than one deferred pull (the user could still be
-// typing when a second auto-sync tick lands) so the eventual deferred refresh merges all of them.
-let pendingPulledTargets = new Set();
-
-/** Pushes local changes and pulls remote ones, on an interval and when the tab is hidden.
- *  Pushing never touches the DOM. Applying a pull does — so if the user is actively typing when
- *  one lands, the IndexedDB write still happens (nothing is lost) but the visible re-render is
- *  deferred until they leave the field, rather than yanking focus/cursor out from under them. */
-async function runAutoSync() {
-  if (autoSyncInFlight || !state.activeBookId) return;
-  autoSyncInFlight = true;
+/** Read-only: checks whether GitHub has anything newer than this device already knows about,
+ *  purely to decide whether the "Pull latest" banner should show itself — never applies anything.
+ *  Actually pulling still requires clicking that banner's button. */
+async function refreshRemoteChangeCheck(bookId) {
+  if (remoteCheckInFlight || !bookId) return;
+  remoteCheckInFlight = true;
   try {
-    // The refresh (or the decision to defer it) runs inside syncNow's onPulled hook, still
-    // holding the sync lock — see boot()'s sync above for why. Deferring here only skips the
-    // *re-render* to protect the user's cursor; the deferred continuation on focusout below
-    // re-acquires the lock itself when it actually runs.
-    const { pushResult, pullResult } = await syncNow(state.activeBookId, {
-      onPulled: async (pulledTargets) => {
-        if (state.view === "settings") return;
-        if (isActivelyEditing()) {
-          pendingViewRefresh = true;
-          for (const t of pulledTargets) pendingPulledTargets.add(t);
-        } else {
-          await refreshActiveBookView(state.activeBookId, pulledTargets);
-        }
-      },
-    });
-    state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
-    // Settings has no cursor/focus to protect, so it's always safe to just re-render it directly
-    // rather than going through the "is the user actively editing" deferral above (see main
-    // boot()'s sync for why refreshSyncStatusUI() alone doesn't update the panel's own contents).
-    if (state.view === "settings") {
-      render();
-    }
+    const { hasChanges } = await checkRemoteChanges(bookId);
+    state.hasRemoteChanges = hasChanges;
     refreshSyncStatusUI();
   } catch (err) {
-    console.error("Novellum: background sync failed", err);
+    console.error("Novellum: remote-change check failed", err);
   } finally {
-    autoSyncInFlight = false;
+    remoteCheckInFlight = false;
   }
 }
 
-function startAutoSync() {
-  setInterval(runAutoSync, AUTO_SYNC_INTERVAL_MS);
+function startRemoteChangeChecks(bookId) {
+  refreshRemoteChangeCheck(bookId);
+  setInterval(() => refreshRemoteChangeCheck(state.activeBookId), REMOTE_CHECK_INTERVAL_MS);
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) runAutoSync();
-  });
-  document.addEventListener("focusout", () => {
-    if (!pendingViewRefresh) return;
-    setTimeout(() => {
-      if (pendingViewRefresh && !isActivelyEditing()) {
-        pendingViewRefresh = false;
-        const targets = pendingPulledTargets;
-        pendingPulledTargets = new Set();
-        // Re-acquires the lock for this deferred continuation too, so it can't run at the same
-        // moment as another queued sync operation and race it the same way (see boot()'s sync).
-        withSyncLock(() => refreshActiveBookView(state.activeBookId, targets));
-      }
-    }, 0);
+    if (!document.hidden) refreshRemoteChangeCheck(state.activeBookId);
   });
 }
 

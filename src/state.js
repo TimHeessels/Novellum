@@ -24,9 +24,9 @@ export const state = {
   newBookOpen: false,
   splitConfirm: null, // { chapterId, sceneId, beforeHtml, selectedHtml, afterHtml }
   deleteSceneConfirm: null, // sceneId
-  // Set from `pushResult.pauseReason` after the most recent sync attempt (boot, auto-sync, or a
-  // manual Sync Now) — covers both "no token yet" and "token/repo present but the connection is
-  // actually failing" (bad token, renamed/deleted repo, rate limit). Null once a sync goes through.
+  // Set from `pushResult.pauseReason` after the most recent manual Push click — covers both "no
+  // token yet" and "token/repo present but the connection is actually failing" (bad token,
+  // renamed/deleted repo, rate limit). Null once a push goes through.
   syncPauseReason: null,
   // Set once, right after a "Sign in with GitHub" redirect lands back on boot() — shown on the
   // settings view's next render, then cleared, rather than persisted.
@@ -41,4 +41,8 @@ export const state = {
   // to decide whether to warn without being able to await an IndexedDB read at that point.
   hasPendingSync: false,
   syncConfigured: false,
+  // Cached result of the latest read-only checkRemoteChanges() check (see main.js's
+  // refreshRemoteChangeCheck) — drives whether the "Pull latest" banner shows itself. Never set
+  // by an actual pull, only by that background check.
+  hasRemoteChanges: false,
 };

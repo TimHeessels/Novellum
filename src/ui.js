@@ -10,9 +10,9 @@ import { state } from "./state.js";
 import {
   scheduleSave,
   listBooks, loadBook, setActiveBookId, getActiveBookId, persistNow, flushSaveNow,
-  saveUiPrefs, deleteBook,
+  saveUiPrefs, deleteBook, mergePulledIntoData,
 } from "./persistence.js";
-import { enqueueSync, ensureBookBootstrapped, reconcileBook, getSyncStatus, withSyncLock } from "./sync-engine.js";
+import { enqueueSync, ensureBookBootstrapped, getSyncStatus, pushChanges, pullChanges, checkRemoteChanges } from "./sync-engine.js";
 import { renderSettingsView } from "./settings-ui.js";
 import { renderOverviewView } from "./overview-ui.js";
 import { exportManuscript, exportEpub } from "./export.js";
@@ -68,7 +68,7 @@ const CENTER_PANEL_TOP_PADDING = 44; // .center-panel's padding-top (styles.css)
 const SCENE_STICKY_DOCK_Y = CENTER_PANEL_TOP_PADDING + 31 + 1;
 let scrollSpyRaf = null;
 
-// Set while a *deliberate* navigation (clicking a scene/chapter, "Sync Now" jumping to a scene,
+// Set while a *deliberate* navigation (clicking a scene/chapter, a pull jumping to a scene,
 // etc.) is programmatically scrolling the center panel via scrollElementToTop. That scroll can
 // briefly land somewhere that doesn't reflect the newly-selected scene at all — e.g. a target
 // near the end of a short document can't be scrolled all the way to its dock position, so
@@ -570,6 +570,7 @@ function renderTopbar() {
       </div>
     </div>
     <div class="topbar-actions">
+      <button class="push-btn" id="pushBtn" style="display:none"></button>
       <button class="sync-status-badge" id="syncStatusBadge" title="Open sync settings">&hellip;</button>
     </div>
   `;
@@ -599,16 +600,30 @@ function renderTopbar() {
   if (openSettingsBtn) openSettingsBtn.onclick = openSettings;
 
   document.getElementById("syncStatusBadge").onclick = openSettings;
+  document.getElementById("pushBtn").onclick = handlePushClick;
   refreshSyncStatusUI();
 }
 
-/** Updates the topbar sync badge and the conflict banner from current IndexedDB state.
- *  Called after every topbar render and on a timer, so it stays current between actions
- *  without needing a full app re-render. */
+/** Updates the topbar Push button, the GitHub Settings badge, and the conflict/setup/pull
+ *  banners from current IndexedDB state. Called after every topbar render and on a timer, so it
+ *  stays current between actions without needing a full app re-render. Leaves the Push button and
+ *  pull banner alone while a push/pull is actually in flight (see pushInFlight/pullInFlight below)
+ *  so it doesn't stomp their "Pushing…"/"Pulling…" feedback. */
 async function refreshSyncStatusUI() {
   const status = await getSyncStatus();
   state.hasPendingSync = status.pendingCount > 0;
   state.syncConfigured = status.configured;
+
+  const pushBtn = document.getElementById("pushBtn");
+  if (pushBtn && !pushInFlight) {
+    if (status.configured && status.pendingCount > 0) {
+      pushBtn.style.display = "";
+      pushBtn.disabled = false;
+      pushBtn.textContent = `Push ${status.pendingCount}`;
+    } else {
+      pushBtn.style.display = "none";
+    }
+  }
 
   const badge = document.getElementById("syncStatusBadge");
   if (badge) {
@@ -616,11 +631,12 @@ async function refreshSyncStatusUI() {
     if (!status.configured) label = "Sync not set up";
     else if (status.conflictCount > 0) label = `${status.conflictCount} conflict${status.conflictCount > 1 ? "s" : ""}`;
     else if (state.syncPauseReason) label = "Sync error";
-    else if (status.pendingCount > 0) label = `${status.pendingCount} pending`;
-    else label = status.lastSyncedAt ? `Synced ${formatRelativeTime(status.lastSyncedAt)}` : "Not synced yet";
+    else {
+      const lastAt = [status.lastPushedAt, status.lastPulledAt].filter(Boolean).sort().pop();
+      label = lastAt ? `Synced ${formatRelativeTime(lastAt)}` : "Not synced yet";
+    }
     badge.textContent = label;
     badge.classList.toggle("has-conflicts", status.conflictCount > 0);
-    badge.classList.toggle("has-pending", status.pendingCount > 0 && status.conflictCount === 0);
   }
 
   const banner = document.getElementById("conflictBanner");
@@ -641,8 +657,8 @@ async function refreshSyncStatusUI() {
 
   // Same shape as the conflict banner, but calmer (accent, not danger). Covers two cases that
   // both just need the user to look at Settings, neither of which has lost or overwritten any
-  // work: sync was never configured, or it's configured but the last attempt (checked on every
-  // boot, background sync, and manual "Sync Now") couldn't actually reach GitHub.
+  // work: sync was never configured, or it's configured but the last push/pull attempt couldn't
+  // actually reach GitHub.
   const setupBanner = document.getElementById("setupBanner");
   if (setupBanner) {
     if (!status.configured || state.syncPauseReason) {
@@ -659,6 +675,85 @@ async function refreshSyncStatusUI() {
       setupBanner.style.display = "none";
       setupBanner.innerHTML = "";
     }
+  }
+
+  // Only ever shown from the read-only background check in main.js's refreshRemoteChangeCheck
+  // (state.hasRemoteChanges) — never toggled by an actual push/pull, so it can't flicker based on
+  // this device's own writes.
+  const pullBanner = document.getElementById("pullBanner");
+  if (pullBanner && !pullInFlight) {
+    if (status.configured && state.hasRemoteChanges) {
+      pullBanner.style.display = "";
+      pullBanner.innerHTML = `
+        <span>New changes are available on GitHub.</span>
+        <button class="banner-btn" id="pullBannerBtn">Pull latest</button>
+      `;
+      document.getElementById("pullBannerBtn").onclick = handlePullClick;
+    } else {
+      pullBanner.style.display = "none";
+      pullBanner.innerHTML = "";
+    }
+  }
+}
+
+let pushInFlight = false;
+
+/** The topbar Push button's click handler — the only thing in the app that ever pushes to
+ *  GitHub. `force` bypasses each outbox entry's retry backoff, same reasoning as the old
+ *  Settings "Sync Now" button: a user-initiated click should surface a real error rather than
+ *  silently skipping a still-backed-off entry. */
+async function handlePushClick() {
+  if (pushInFlight) return;
+  pushInFlight = true;
+  const pushBtn = document.getElementById("pushBtn");
+  if (pushBtn) {
+    pushBtn.disabled = true;
+    pushBtn.textContent = "Pushing…";
+  }
+  try {
+    const pushResult = await pushChanges({ force: true });
+    state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
+  } catch (err) {
+    console.error("Novellum: push failed", err);
+  } finally {
+    pushInFlight = false;
+    refreshSyncStatusUI();
+  }
+}
+
+let pullInFlight = false;
+
+/** The pull banner's "Pull latest" click handler — the only thing in the app that ever applies a
+ *  pull outside of switching books. Re-checks for remote changes afterward rather than just
+ *  assuming none are left, since a pull that hit a conflict leaves that one file's "something's
+ *  different on GitHub" state genuinely still true. */
+async function handlePullClick() {
+  if (pullInFlight) return;
+  pullInFlight = true;
+  const pullBannerBtn = document.getElementById("pullBannerBtn");
+  if (pullBannerBtn) {
+    pullBannerBtn.disabled = true;
+    pullBannerBtn.textContent = "Pulling…";
+  }
+  const bookId = getActiveBookId();
+  try {
+    const result = await pullChanges(bookId, {
+      onPulled: async (pulledTargets) => {
+        await mergePulledIntoData(bookId, pulledTargets);
+        if (!getSceneAndChapter(state.activeSceneId).scene) {
+          state.activeChapterId = data.chapters[0]?.id;
+          state.activeSceneId = data.chapters[0]?.scenes[0]?.id;
+        }
+      },
+    });
+    if (result.pulled > 0) render();
+    const check = await checkRemoteChanges(bookId).catch(() => ({ hasChanges: false }));
+    state.hasRemoteChanges = check.hasChanges;
+  } catch (err) {
+    console.error("Novellum: pull failed", err);
+  } finally {
+    pullInFlight = false;
+    refreshSyncStatusUI();
   }
 }
 
@@ -714,15 +809,15 @@ async function switchToBook(bookId) {
 
   // Show local content immediately (above), then pull anything newer from GitHub in the
   // background and refresh once — the whole point of switching books is to see this book's
-  // latest state, so unlike the periodic background sync, it's fine to just re-render here.
+  // latest state, so unlike everything else that's manual now, this one still pulls on its own.
   // The pull itself and the loadBook() that refreshes `data` from its results run inside
-  // withSyncLock together — otherwise a background auto-sync tick landing in the gap between
-  // them would flush the still-stale in-memory `data` and clobber the scenes/chapters this pull
-  // just wrote (see withSyncLock's own comment in sync-engine.js).
-  const result = await withSyncLock(async () => {
-    const r = await reconcileBook(bookId);
-    if (r.pulled > 0 && state.activeBookId === bookId) await loadBook(bookId);
-    return r;
+  // pullChanges's lock together — otherwise a concurrent push/pull elsewhere landing in the gap
+  // between them would flush the still-stale in-memory `data` and clobber the scenes/chapters this
+  // pull just wrote (see withSyncLock's comment in sync-engine.js).
+  const result = await pullChanges(bookId, {
+    onPulled: async () => {
+      if (state.activeBookId === bookId) await loadBook(bookId);
+    },
   });
   if (result.pulled > 0 && state.activeBookId === bookId) {
     if (!getSceneAndChapter(state.activeSceneId).scene) {
@@ -1669,6 +1764,7 @@ export function initApp() {
     <div class="topbar" id="topbar"></div>
     <div class="setup-banner" id="setupBanner" style="display:none"></div>
     <div class="conflict-banner" id="conflictBanner" style="display:none"></div>
+    <div class="setup-banner" id="pullBanner" style="display:none"></div>
     <div class="main">
       <div class="left-panel" id="leftPanel"></div>
       <div class="resize-handle" id="leftHandle"><div class="resize-line"></div></div>

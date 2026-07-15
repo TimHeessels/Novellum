@@ -14,7 +14,7 @@ const SETTINGS_KEY = "github";
 export async function getGithubSettings() {
   return (
     (await dbGet("settings", SETTINGS_KEY)) || {
-      token: "", owner: "", repo: "", defaultBranch: "", lastSyncedAt: null,
+      token: "", owner: "", repo: "", defaultBranch: "", lastPushedAt: null, lastPulledAt: null,
     }
   );
 }
@@ -30,7 +30,7 @@ async function patchGithubSettings(patch) {
  *  re-bootstraps from scratch via ensureBookBootstrapped, same as a brand-new install. */
 export async function disconnectGithub() {
   await dbPut("settings", {
-    key: SETTINGS_KEY, token: "", owner: "", repo: "", defaultBranch: "", lastSyncedAt: null,
+    key: SETTINGS_KEY, token: "", owner: "", repo: "", defaultBranch: "", lastPushedAt: null, lastPulledAt: null,
   });
   await Promise.all([
     dbReplaceAll("conflicts", []),
@@ -146,39 +146,24 @@ export async function getSyncStatus() {
   const [outbox, conflicts] = await Promise.all([dbGetAll("outbox"), dbGetAll("conflicts")]);
   return {
     configured: !!(settings.token && settings.owner && settings.repo),
-    lastSyncedAt: settings.lastSyncedAt || null,
+    lastPushedAt: settings.lastPushedAt || null,
+    lastPulledAt: settings.lastPulledAt || null,
     pendingCount: outbox.length,
     conflictCount: conflicts.length,
   };
 }
 
-/** Push then pull for one book, in one call — shared by the manual "Sync Now" button and the
- *  automatic background timer so they can't drift out of sync with each other's behavior. */
-async function syncNowInner(bookId, { force = false } = {}) {
-  // A scene deleted (or replaced by an import) moments ago might still be sitting in IndexedDB
-  // if its debounced local save hasn't landed yet — pushOne would then see a live row and push
-  // an update instead of the deletion. Flushing first guarantees the outbox is drained against
-  // the same local state the user actually sees.
-  await flushSaveNow();
-  const pushResult = await drainOutbox(undefined, { force });
-  const pullResult = bookId && !pushResult.paused
-    ? await reconcileBook(bookId, pushResult.pushedTargets)
-    : { pulled: 0, conflicts: 0 };
-  if (!pushResult.paused) await patchGithubSettings({ lastSyncedAt: new Date().toISOString() });
-  return { pushResult, pullResult };
-}
-
-// Every caller (the background timer, the manual "Sync Now" button, the boot-time sync, and
-// anything else below that touches a book's chapters/scenes rows from a pull) funnels through
-// this same chain so two such operations can never run concurrently. Without it, e.g. a pull that
-// writes freshly-fetched chapters/scenes to IndexedDB (reconcileBook / resolveConflictUseTheirs)
-// can be immediately clobbered by a background auto-sync's flushSaveNow(), which does a blind
-// full-table replace of "chapters"/"scenes" from the in-memory `data` object — and `data` won't
-// reflect the pull's results until the caller has had a chance to loadBook() again. Callers that
-// need that refresh to also be race-free (settings-ui.js's conflict resolution, ui.js's
+// Every caller — the manual Push button, the manual Pull banner, conflict resolution, history
+// restore, and anything else below that touches a book's chapters/scenes rows from a pull —
+// funnels through this same chain so two such operations can never run concurrently. Without it,
+// e.g. a pull that writes freshly-fetched chapters/scenes to IndexedDB (reconcileBook /
+// resolveConflictUseTheirs) could be clobbered by a concurrent push's flushSaveNow(), which does a
+// blind full-table replace of "chapters"/"scenes" from the in-memory `data` object — and `data`
+// won't reflect the pull's results until the caller has had a chance to loadBook() again. Callers
+// that need that refresh to also be race-free (settings-ui.js's conflict resolution, ui.js's
 // switchToBook) wrap their whole "write + refresh local `data`" sequence in withSyncLock too, so
-// no auto-sync tick can land in between. Never call withSyncLock from inside a function that's
-// already running inside one — the chain isn't reentrant and it will deadlock.
+// nothing else can land in between. Never call withSyncLock from inside a function that's already
+// running inside one — the chain isn't reentrant and it will deadlock.
 let syncChain = Promise.resolve();
 export function withSyncLock(fn) {
   const result = syncChain.then(fn);
@@ -189,18 +174,34 @@ export function withSyncLock(fn) {
   return result;
 }
 
-/** `onPulled`, if given, runs inside the same lock right after a pull that actually changed
- *  something (`pullResult.pulled > 0`) — for callers that need to refresh the in-memory `data`
- *  object (or otherwise react) atomically with the pull, so a queued-up auto-sync tick can't slip
- *  in between "IndexedDB updated" and "the refresh caught up to it" and clobber the pull with a
- *  stale flush (see withSyncLock's comment above). Called with the pull's `pulledTargets` set so
- *  callers can merge in just what changed instead of reloading everything (see
- *  mergePulledIntoData in persistence.js). */
-export function syncNow(bookId, { onPulled, ...opts } = {}) {
+/** Pushes every pending outbox entry to GitHub — the only thing that ever creates commits. Only
+ *  ever runs when something (a click) asks for it; nothing in this app calls this on a timer. */
+export function pushChanges({ force = false } = {}) {
   return withSyncLock(async () => {
-    const result = await syncNowInner(bookId, opts);
-    if (onPulled && result.pullResult.pulled > 0) await onPulled(result.pullResult.pulledTargets);
-    return result;
+    // A scene deleted (or replaced by an import) moments ago might still be sitting in IndexedDB
+    // if its debounced local save hasn't landed yet — pushOne would then see a live row and push
+    // an update instead of the deletion. Flushing first guarantees the outbox is drained against
+    // the same local state the user actually sees.
+    await flushSaveNow();
+    const pushResult = await drainOutbox(undefined, { force });
+    if (!pushResult.paused) await patchGithubSettings({ lastPushedAt: new Date().toISOString() });
+    return pushResult;
+  });
+}
+
+/** Pulls (applies) remote changes for one book. `onPulled`, if given, runs inside the same lock
+ *  right after a pull that actually changed something (`pulled > 0`) — for callers that need to
+ *  refresh the in-memory `data` object (or otherwise react) atomically with the pull, so nothing
+ *  else queued on the lock can slip in between "IndexedDB updated" and "the refresh caught up to
+ *  it" (see withSyncLock's comment above). Called with the pull's `pulledTargets` set so callers
+ *  can merge in just what changed instead of reloading everything (see mergePulledIntoData in
+ *  persistence.js). */
+export function pullChanges(bookId, { onPulled } = {}) {
+  return withSyncLock(async () => {
+    const pullResult = await reconcileBook(bookId);
+    if (!pullResult.skipped) await patchGithubSettings({ lastPulledAt: new Date().toISOString() });
+    if (onPulled && pullResult.pulled > 0) await onPulled(pullResult.pulledTargets);
+    return pullResult;
   });
 }
 
@@ -415,10 +416,11 @@ export async function drainOutbox(onProgress, { force = false } = {}) {
   let conflicts = 0;
   let paused = false;
   let pauseReason = null;
-  // Targets this call successfully pushed, so the immediately-following reconcileBook (see
-  // syncNowInner) can skip re-deriving their state from a fresh tree fetch — GitHub's git data
-  // endpoints (trees/blobs) can lag a moment behind a just-completed Contents API commit, and
-  // reconcileBook has no way to tell that lag apart from a genuine concurrent remote change. We
+  // Targets this call successfully pushed — callers that pull again shortly after a push (e.g.
+  // settings-ui.js's "just connected a repo" flow) can pass this to reconcileBook as `justPushed`
+  // so it skips re-deriving their state from a fresh tree fetch. GitHub's git data endpoints
+  // (trees/blobs) can lag a moment behind a just-completed Contents API commit, and reconcileBook
+  // has no way to tell that lag apart from a genuine concurrent remote change otherwise. We
   // already know the true post-push sha from the PUT response itself, so trust that instead.
   const pushedTargets = new Set();
 
@@ -636,6 +638,42 @@ export async function reconcileBook(bookId, justPushed = new Set()) {
   }
 
   return { pulled, conflicts, pulledTargets };
+}
+
+/** Read-only check for whether GitHub has anything newer than what this device already knows
+ *  about for this book — used only to decide whether the "Pull latest" banner should show
+ *  itself. Never writes anything locally and never resolves a conflict; pullChanges (reconcileBook)
+ *  is what actually applies (or conflicts on) whatever this finds. Same cost/shape as a `git
+ *  fetch` versus a `git pull` — a tree read and a handful of local sha comparisons, no blob
+ *  downloads. */
+export async function checkRemoteChanges(bookId) {
+  const { token, owner, repo, defaultBranch } = await getGithubSettings();
+  if (!token || !owner || !repo || !bookId) return { hasChanges: false };
+
+  let remoteByPath;
+  try {
+    remoteByPath = await getBookRemoteTree(token, owner, repo, defaultBranch || "main", bookId);
+  } catch {
+    return { hasChanges: false };
+  }
+
+  const prefix = `books/${bookId}/`;
+  const meta = (await dbGet("manifestMeta", bookId)) || {};
+  if (remoteByPath.has(`${prefix}manifest.json`) && remoteByPath.get(`${prefix}manifest.json`) !== meta.manifestSha) {
+    return { hasChanges: true };
+  }
+  if (remoteByPath.has(`${prefix}bible.json`) && remoteByPath.get(`${prefix}bible.json`) !== meta.bibleSha) {
+    return { hasChanges: true };
+  }
+
+  const sceneSyncRows = await dbGetAllByIndex("sceneSync", "bookId", bookId);
+  const knownByPath = new Map(sceneSyncRows.map((s) => [`${prefix}scenes/${s.id}.md`, s.remoteSha]));
+  for (const [path, sha] of remoteByPath) {
+    if (!path.startsWith(`${prefix}scenes/`)) continue;
+    if (knownByPath.get(path) !== sha) return { hasChanges: true };
+  }
+
+  return { hasChanges: false };
 }
 
 /* ---------------------------------------------------------------- */

@@ -3,7 +3,7 @@
 import { escapeHtml, formatRelativeTime, markdownToScene } from "./model.js";
 import {
   getGithubSettings, disconnectGithub,
-  listOutbox, listConflicts, syncNow, resolveConflictKeepMine, resolveConflictUseTheirs,
+  listOutbox, listConflicts, pushChanges, pullChanges, resolveConflictKeepMine, resolveConflictUseTheirs,
   getLocalContentForConflict, connectToRepo, isUsableVaultRepo, resolveAllConflicts, withSyncLock,
   listBookHistory, isBookClean, previewRestore, restoreToCommit,
 } from "./sync-engine.js";
@@ -40,9 +40,14 @@ export async function renderSettingsView(container, callbacks) {
       ${isConnected ? `
         <div class="settings-section">
           <div class="section-label">Sync</div>
-          <div>Last synced: ${settings.lastSyncedAt ? formatRelativeTime(settings.lastSyncedAt) : "Never"}</div>
+          <div class="settings-status" style="margin:0 0 8px">
+            Push and Pull now live in the topbar — the Push button shows up there whenever there
+            are local changes to send, and a banner offers "Pull latest" whenever GitHub has
+            something new.
+          </div>
+          <div>Last pushed: ${settings.lastPushedAt ? formatRelativeTime(settings.lastPushedAt) : "Never"}</div>
+          <div>Last pulled: ${settings.lastPulledAt ? formatRelativeTime(settings.lastPulledAt) : "Never"}</div>
           <div>Pending changes: ${outbox.length}</div>
-          <button class="modal-btn done" id="settingsSyncNow" style="margin-top:8px">Sync Now</button>
           <div id="syncStatus" class="settings-status"></div>
         </div>
 
@@ -109,16 +114,17 @@ export async function renderSettingsView(container, callbacks) {
       try {
         await connectToRepo(owner, repo);
         state.pendingOAuthVaultPick = null;
-        // Sync right away instead of leaving a freshly-connected repo sitting at "Last synced:
-        // Never" until the user notices and clicks Sync Now themselves — this is the single-repo
-        // auto-connect case's equivalent of the boot-time sync main.js kicks off on its own.
+        // Push+pull right away instead of leaving a freshly-connected repo sitting at "Last
+        // pushed/pulled: Never" until the user notices the topbar controls themselves — this is
+        // the one deliberate exception to "nothing syncs without a click" (see main.js), since the
+        // whole point of just connecting is to see what's already in the vault.
         setStatus("settingsStatus", "Connected. Syncing…", false);
         const bookId = getActiveBookId();
-        // notifyBookDataChanged runs inside syncNow's onPulled hook, still holding the sync lock,
-        // so a background auto-sync tick can't land in the gap and flush stale in-memory `data`
+        // notifyBookDataChanged runs inside pullChanges's onPulled hook, still holding the sync
+        // lock, so nothing else queued on it can land in the gap and flush stale in-memory `data`
         // over what this pull just wrote (see withSyncLock's comment in sync-engine.js).
-        const { pushResult, pullResult } = await syncNow(bookId, {
-          force: true,
+        const pushResult = await pushChanges({ force: true });
+        await pullChanges(bookId, {
           onPulled: () => notifyBookDataChanged && notifyBookDataChanged(bookId),
         });
         state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
@@ -128,40 +134,6 @@ export async function renderSettingsView(container, callbacks) {
         connectGrantedBtn.disabled = false;
         setStatus("settingsStatus", `Failed: ${err.message}`, true);
       }
-    };
-  }
-
-  const syncNowBtn = document.getElementById("settingsSyncNow");
-  if (syncNowBtn) {
-    syncNowBtn.onclick = async () => {
-      // The click handler itself is race-free (syncNow() serializes against the background
-      // timer regardless), but without this a double-click still queues up a second, pointless
-      // round trip before the first one's even rendered.
-      syncNowBtn.disabled = true;
-      setStatus("syncStatus", "Syncing…", false);
-      const bookId = getActiveBookId();
-      // See connectGrantedBtn above for why notifyBookDataChanged runs inside onPulled rather
-      // than after this await returns.
-      const { pushResult, pullResult } = await syncNow(bookId, {
-        force: true,
-        onPulled: () => notifyBookDataChanged && notifyBookDataChanged(bookId),
-      });
-      state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
-      // Push and pull can both flag the same target as conflicting in one pass (e.g. a structural
-      // push conflict gets rediscovered during reconciliation) — they'd double-count it if summed,
-      // so re-read the actual conflict list rather than trusting each pass's own tally.
-      const totalConflicts = (await listConflicts()).length;
-      await renderSettingsView(container, callbacks);
-      if (pushResult.paused) {
-        setStatus("syncStatus", `Paused: ${pushResult.pauseReason}`, true);
-      } else {
-        setStatus(
-          "syncStatus",
-          `Pushed ${pushResult.pushed} file(s), pulled ${pullResult.pulled} file(s), ${totalConflicts} conflict(s).`,
-          totalConflicts > 0
-        );
-      }
-      if (onSyncStatusChanged) onSyncStatusChanged();
     };
   }
 
@@ -232,7 +204,7 @@ export async function renderSettingsView(container, callbacks) {
       // Same "re-queue then actually push now" pattern as the single Keep Mine button — one
       // shared force-push covers every conflict just re-queued, rather than one push each.
       const { count } = await resolveAllConflicts("mine");
-      const { pushResult } = await syncNow(null, { force: true });
+      const pushResult = await pushChanges({ force: true });
       await renderSettingsView(container, callbacks);
       setStatus("syncStatus", `Resolved ${count} conflict(s). Pushed ${pushResult.pushed} file(s).`, false);
       if (onSyncStatusChanged) onSyncStatusChanged();
@@ -290,9 +262,9 @@ export async function renderSettingsView(container, callbacks) {
         keepBtn.textContent = "Resolving…";
         setStatus("syncStatus", "Resolving — pushing your version…", false);
         // "Keep Mine" only re-queues the push — actually push it now instead of leaving the
-        // user to notice nothing happened and hit Sync Now again themselves.
+        // user to notice nothing happened and hit the topbar Push button again themselves.
         await resolveConflictKeepMine(c.key);
-        const { pushResult } = await syncNow(null, { force: true });
+        const pushResult = await pushChanges({ force: true });
         await renderSettingsView(container, callbacks);
         setStatus("syncStatus", `Resolved. Pushed ${pushResult.pushed} file(s), ${pushResult.conflicts} conflict(s).`, pushResult.conflicts > 0);
         if (onSyncStatusChanged) onSyncStatusChanged();
@@ -893,7 +865,7 @@ async function loadRestorePreviewInto(diffEl, bookId, commitSha, container, call
         if (callbacks.notifyBookDataChanged) await callbacks.notifyBookDataChanged(bookId);
       });
       // Separate, not-nested call — pushes the restored state forward as new commits.
-      const { pushResult } = await syncNow(bookId, { force: true });
+      const pushResult = await pushChanges({ force: true });
       await renderSettingsView(container, callbacks);
       const statusEl = document.getElementById("syncStatus");
       if (statusEl) {

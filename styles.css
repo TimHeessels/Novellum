@@ -60,8 +60,18 @@ button{font-family:inherit}
   font-family:inherit;transition:background .15s,color .15s,border-color .15s;
 }
 .sync-status-badge:hover{background:var(--hover-bg-2);color:var(--text-dim)}
-.sync-status-badge.has-pending{color:var(--accent-hover);border-color:var(--card-border-hover)}
 .sync-status-badge.has-conflicts{color:var(--danger-text);border-color:var(--danger-border)}
+
+/* The manual Push button — only rendered in the topbar while there's something pending, so its
+   "here's a real action to take" tone (filled accent, not just an outline) can stand out next to
+   the calmer status badge beside it. */
+.push-btn{
+  border:1px solid var(--accent-hover);background:var(--accent-hover);color:var(--bg);
+  cursor:pointer;border-radius:6px;padding:5px 10px;font-size:11.5px;font-weight:600;
+  font-family:inherit;transition:opacity .15s;
+}
+.push-btn:hover{opacity:.85}
+.push-btn:disabled{opacity:.6;cursor:default}
 
 .conflict-banner{
   flex:none;display:flex;align-items:center;justify-content:center;gap:14px;
