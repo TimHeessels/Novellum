@@ -619,7 +619,7 @@ async function refreshSyncStatusUI() {
     if (status.configured && status.pendingCount > 0) {
       pushBtn.style.display = "";
       pushBtn.disabled = false;
-      pushBtn.textContent = `Push ${status.pendingCount}`;
+      pushBtn.textContent = `Push ${status.pendingCount} change${status.pendingCount > 1 ? "s" : ""}`;
     } else {
       pushBtn.style.display = "none";
     }
@@ -1384,6 +1384,14 @@ function syncChapterTitleDisplays(chapterId) {
   if (state.activeChapterId === chapterId) syncFullChapterBanner();
 }
 
+/** Scrolls the left-panel manuscript tree so the current chapter/scene row is in view — used on
+ *  initial load, where render() draws the tree at its default scroll position (top) regardless
+ *  of which chapter/scene was actually restored as active. */
+function scrollLeftPanelToCurrent() {
+  const el = leftPanelEl.querySelector(".scene-row.current") || leftPanelEl.querySelector(".chapter-name.current");
+  if (el) el.scrollIntoView({ block: "nearest" });
+}
+
 function bindChapterStickyHeaders(root) {
   root.querySelectorAll(".chapter-title-text[data-chapter-id]").forEach((el) => {
     const ch = getChapter(el.dataset.chapterId);
@@ -1794,6 +1802,13 @@ export function initApp() {
   centerPanelEl.addEventListener("scroll", handleCenterScrollSpy);
 
   render();
+  // render() draws the center panel and left-panel tree at their default (top) scroll position —
+  // neither knows to jump to the chapter/scene that was actually restored as active, so do that
+  // explicitly here, same as setViewMode does when switching into Full/Chapter mode.
+  if ((state.view === "full" || state.view === "chapter") && state.activeSceneId) {
+    focusSceneText(state.activeSceneId, { focusText: false });
+  }
+  requestAnimationFrame(scrollLeftPanelToCurrent);
 
   // Keeps "Synced Xs/m/h ago" ticking and the conflict banner current between actions,
   // independent of the (much less frequent) actual background sync network calls.
