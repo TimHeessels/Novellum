@@ -1,0 +1,14 @@
+{
+  "name": "Novellum",
+  "short_name": "Novellum",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0d0a08",
+  "theme_color": "#0d0a08",
+  "orientation": "any",
+  "icons": [
+    { "src": "icons/web-app-manifest-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/web-app-manifest-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
