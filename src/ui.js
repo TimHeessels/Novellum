@@ -994,8 +994,8 @@ function renderLeftPanel() {
         </div>
 
         <div class="section-label" style="margin-top:24px">Export</div>
-        <div class="settings-status" style="margin:0 0 10px">Download the full manuscript as a nicely formatted, printable document.</div>
-        <button class="tbtn" data-action="export-manuscript">Export Manuscript</button>
+        <div class="settings-status" style="margin:0 0 10px">Download the full manuscript as a nicely formatted PDF.</div>
+        <button class="tbtn" data-action="export-manuscript">Export PDF</button>
         <div class="settings-status" style="margin:10px 0 10px">Download the full manuscript as an EPUB e-book file.</div>
         <button class="tbtn" data-action="export-epub">Export EPUB</button>
 

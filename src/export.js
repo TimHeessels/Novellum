@@ -101,12 +101,14 @@ export function buildManuscriptDocument(data) {
 <body>
   <div class="ms-title"><h1>${escapeHtml(title)}</h1></div>
   ${chaptersHtml}
+  <script>window.addEventListener("load", () => window.print());</script>
 </body>
 </html>`;
 }
 
-/** Opens the formatted manuscript in a new tab as a self-contained HTML document, ready to
- *  read or print/save-as-PDF from the browser's own print dialog. */
+/** Opens the formatted manuscript in a new tab and triggers the browser's print dialog, so
+ *  "Save as PDF" there produces a real paginated PDF (correct page breaks, selectable text) —
+ *  far higher quality than a canvas-rasterized PDF library could give a text-heavy manuscript. */
 export function exportManuscript(data) {
   const html = buildManuscriptDocument(data);
   const blob = new Blob([html], { type: "text/html" });

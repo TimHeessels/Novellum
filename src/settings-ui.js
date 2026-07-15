@@ -39,12 +39,7 @@ export async function renderSettingsView(container, callbacks) {
 
       ${isConnected ? `
         <div class="settings-section">
-          <div class="section-label">Sync</div>
-          <div class="settings-status" style="margin:0 0 8px">
-            Push and Pull now live in the topbar — the Push button shows up there whenever there
-            are local changes to send, and a banner offers "Pull latest" whenever GitHub has
-            something new.
-          </div>
+          <div class="section-label">Sync stats</div>
           <div>Last pushed: ${settings.lastPushedAt ? formatRelativeTime(settings.lastPushedAt) : "Never"}</div>
           <div>Last pulled: ${settings.lastPulledAt ? formatRelativeTime(settings.lastPulledAt) : "Never"}</div>
           <div>Pending changes: ${outbox.length}</div>
