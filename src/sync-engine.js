@@ -666,11 +666,20 @@ export async function checkRemoteChanges(bookId) {
     return { hasChanges: true };
   }
 
-  const sceneSyncRows = await dbGetAllByIndex("sceneSync", "bookId", bookId);
-  const knownByPath = new Map(sceneSyncRows.map((s) => [`${prefix}scenes/${s.id}.md`, s.remoteSha]));
-  for (const [path, sha] of remoteByPath) {
-    if (!path.startsWith(`${prefix}scenes/`)) continue;
-    if (knownByPath.get(path) !== sha) return { hasChanges: true };
+  // Only scenes this device already knows about can be "changed remotely" independent of the
+  // manifest — a scene the manifest doesn't yet reference would already have been caught by the
+  // manifest-sha check above (that's how reconcileBook itself discovers brand-new scenes, via
+  // applyRemoteManifest). Comparing every scenes/*.md path found in the tree instead — including
+  // ones this device has never adopted, e.g. a leftover file no chapter's sceneIds actually lists
+  // — would report "changed" forever, since nothing reconcileBook does ever touches those paths.
+  const [localScenes, sceneSyncRows] = await Promise.all([
+    dbGetAllByIndex("scenes", "bookId", bookId),
+    dbGetAllByIndex("sceneSync", "bookId", bookId),
+  ]);
+  const syncById = new Map(sceneSyncRows.map((s) => [s.id, s]));
+  for (const sc of localScenes) {
+    const remoteSha = remoteByPath.get(`${prefix}scenes/${sc.id}.md`);
+    if (remoteSha && remoteSha !== syncById.get(sc.id)?.remoteSha) return { hasChanges: true };
   }
 
   return { hasChanges: false };
