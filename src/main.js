@@ -3,11 +3,11 @@
 import { initApp, render, refreshSyncStatusUI } from "./ui.js";
 import { data, getSceneAndChapter } from "./model.js";
 import { state } from "./state.js";
-import { DEFAULT_BOOK_ID, listBooks, loadBook, setActiveBookId, persistNow, flushSaveNow, loadUiPrefs } from "./persistence.js";
+import { DEFAULT_BOOK_ID, listBooks, loadBook, setActiveBookId, persistNow, flushSaveNow, loadUiPrefs, mergePulledIntoData } from "./persistence.js";
 import { ensureBookBootstrapped, syncNow, completeGithubAppLogin, withSyncLock } from "./sync-engine.js";
 import { consumePendingOAuthResult } from "./github-oauth.js";
 
-const AUTO_SYNC_INTERVAL_MS = 60000;
+const AUTO_SYNC_INTERVAL_MS = 5 * 60000;
 const EDITABLE_SELECTOR = '[contenteditable="true"]';
 const RESTORABLE_VIEWS = ["scene", "chapter", "full", "overview", "settings"];
 
@@ -125,7 +125,7 @@ async function boot() {
   // after this await returns — otherwise a background auto-sync tick could land in the gap and
   // flush the still-stale in-memory `data` over whatever this pull just wrote to IndexedDB.
   const { pushResult, pullResult } = await syncNow(bookId, {
-    onPulled: () => (state.view === "settings" ? null : refreshActiveBookView(bookId)),
+    onPulled: (pulledTargets) => (state.view === "settings" ? null : refreshActiveBookView(bookId, pulledTargets)),
   });
   state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
   // If Settings happens to be the view showing (e.g. right after a fresh connect), refreshing
@@ -172,10 +172,13 @@ function applyRestoredUiPrefs(prefs) {
 }
 
 /** Refreshes `data`/state from IndexedDB and re-renders — but only if `bookId` is still the
- *  one currently open (the user may have switched books while this was in flight). */
-async function refreshActiveBookView(bookId) {
+ *  one currently open (the user may have switched books while this was in flight). `pulledTargets`
+ *  (from reconcileBook, via syncNow's onPulled) scopes the refresh to just what the pull actually
+ *  changed — see mergePulledIntoData for why a blanket reload here isn't safe while the user might
+ *  be mid-edit elsewhere in the same book. */
+async function refreshActiveBookView(bookId, pulledTargets) {
   if (state.activeBookId !== bookId) return;
-  await loadBook(bookId);
+  await mergePulledIntoData(bookId, pulledTargets);
   if (!getSceneAndChapter(state.activeSceneId).scene) {
     state.activeChapterId = data.chapters[0]?.id;
     state.activeSceneId = data.chapters[0]?.scenes[0]?.id;
@@ -189,6 +192,9 @@ function isActivelyEditing() {
 
 let autoSyncInFlight = false;
 let pendingViewRefresh = false;
+// Accumulates pulledTargets across possibly more than one deferred pull (the user could still be
+// typing when a second auto-sync tick lands) so the eventual deferred refresh merges all of them.
+let pendingPulledTargets = new Set();
 
 /** Pushes local changes and pulls remote ones, on an interval and when the tab is hidden.
  *  Pushing never touches the DOM. Applying a pull does — so if the user is actively typing when
@@ -203,12 +209,13 @@ async function runAutoSync() {
     // *re-render* to protect the user's cursor; the deferred continuation on focusout below
     // re-acquires the lock itself when it actually runs.
     const { pushResult, pullResult } = await syncNow(state.activeBookId, {
-      onPulled: async () => {
+      onPulled: async (pulledTargets) => {
         if (state.view === "settings") return;
         if (isActivelyEditing()) {
           pendingViewRefresh = true;
+          for (const t of pulledTargets) pendingPulledTargets.add(t);
         } else {
-          await refreshActiveBookView(state.activeBookId);
+          await refreshActiveBookView(state.activeBookId, pulledTargets);
         }
       },
     });
@@ -237,9 +244,11 @@ function startAutoSync() {
     setTimeout(() => {
       if (pendingViewRefresh && !isActivelyEditing()) {
         pendingViewRefresh = false;
+        const targets = pendingPulledTargets;
+        pendingPulledTargets = new Set();
         // Re-acquires the lock for this deferred continuation too, so it can't run at the same
         // moment as another queued sync operation and race it the same way (see boot()'s sync).
-        withSyncLock(() => refreshActiveBookView(state.activeBookId));
+        withSyncLock(() => refreshActiveBookView(state.activeBookId, targets));
       }
     }, 0);
   });

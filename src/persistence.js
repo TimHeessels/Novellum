@@ -1,7 +1,7 @@
 "use strict";
 
 import { dbGet, dbGetAllByIndex, dbGetAll, dbPut, dbReplaceWhereIndex, dbDelete } from "./db.js";
-import { data } from "./model.js";
+import { data, getSceneAndChapter } from "./model.js";
 
 export const DEFAULT_BOOK_ID = "book-default";
 
@@ -35,6 +35,16 @@ export async function loadBook(bookId) {
   hydrateDataFromRows({ chapters, scenes, bibleEntries });
 }
 
+function hydrateBibleFromRows(bibleEntries) {
+  const toBibleItem = (row) => ({ id: row.id, name: row.name, desc: row.desc });
+  const byKind = (kind) =>
+    bibleEntries.filter((b) => b.kind === kind).sort((a, b) => a.order - b.order).map(toBibleItem);
+
+  data.characters = byKind("character");
+  data.locations = byKind("location");
+  data.concepts = byKind("concept");
+}
+
 function hydrateDataFromRows({ chapters, scenes, bibleEntries }) {
   const scenesByChapter = new Map();
   for (const sc of scenes.slice().sort((a, b) => a.order - b.order)) {
@@ -49,13 +59,47 @@ function hydrateDataFromRows({ chapters, scenes, bibleEntries }) {
     .sort((a, b) => a.order - b.order)
     .map((ch) => ({ id: ch.id, title: ch.title, scenes: scenesByChapter.get(ch.id) || [] }));
 
-  const toBibleItem = (row) => ({ id: row.id, name: row.name, desc: row.desc });
-  const byKind = (kind) =>
-    bibleEntries.filter((b) => b.kind === kind).sort((a, b) => a.order - b.order).map(toBibleItem);
+  hydrateBibleFromRows(bibleEntries);
+}
 
-  data.characters = byKind("character");
-  data.locations = byKind("location");
-  data.concepts = byKind("concept");
+/**
+ * Applies a sync pull to `data` without disturbing anything the pull didn't actually touch.
+ * loadBook() rebuilds the whole book from IndexedDB, which is fine right after a pull if nothing
+ * else is happening — but a background auto-sync pull can land while the user is still actively
+ * typing in some *other* scene, and that scene's latest keystrokes may only exist in `data` (the
+ * 800ms save debounce hasn't flushed them to IndexedDB yet). A full loadBook() at that moment
+ * would silently revert those unsaved keystrokes to whatever's in IndexedDB. Merging in just the
+ * pulled targets (`"manifest:<bookId>" | "bible:<bookId>" | "scene:<id>"`, from
+ * reconcileBook's `pulledTargets`) leaves every other scene's in-memory object untouched.
+ */
+export async function mergePulledIntoData(bookId, pulledTargets) {
+  if (!pulledTargets || pulledTargets.size === 0) return;
+
+  if (pulledTargets.has(`manifest:${bookId}`)) {
+    // Chapter/scene structure (adds, deletes, reorders, brand-new scenes pulled in whole) is
+    // rare and, unlike a same-scene content edit, can't be patched onto `data` piecemeal — it
+    // has to be re-derived from the whole tree, so this one case still falls back to a full
+    // reload.
+    await loadBook(bookId);
+    return;
+  }
+
+  if (pulledTargets.has(`bible:${bookId}`)) {
+    const bibleEntries = await dbGetAllByIndex("bibleEntries", "bookId", bookId);
+    hydrateBibleFromRows(bibleEntries);
+  }
+
+  for (const target of pulledTargets) {
+    if (!target.startsWith("scene:")) continue;
+    const sceneId = target.slice("scene:".length);
+    const row = await dbGet("scenes", sceneId);
+    const { scene: sc } = getSceneAndChapter(sceneId);
+    if (!row || !sc) continue;
+    sc.title = row.title;
+    sc.text = row.text;
+    sc.summary = row.summary;
+    sc.todos = row.todos;
+  }
 }
 
 async function flattenDataToRows(bookId) {

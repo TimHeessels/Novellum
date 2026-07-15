@@ -193,11 +193,13 @@ export function withSyncLock(fn) {
  *  something (`pullResult.pulled > 0`) — for callers that need to refresh the in-memory `data`
  *  object (or otherwise react) atomically with the pull, so a queued-up auto-sync tick can't slip
  *  in between "IndexedDB updated" and "the refresh caught up to it" and clobber the pull with a
- *  stale flush (see withSyncLock's comment above). */
+ *  stale flush (see withSyncLock's comment above). Called with the pull's `pulledTargets` set so
+ *  callers can merge in just what changed instead of reloading everything (see
+ *  mergePulledIntoData in persistence.js). */
 export function syncNow(bookId, { onPulled, ...opts } = {}) {
   return withSyncLock(async () => {
     const result = await syncNowInner(bookId, opts);
-    if (onPulled && result.pullResult.pulled > 0) await onPulled();
+    if (onPulled && result.pullResult.pulled > 0) await onPulled(result.pullResult.pulledTargets);
     return result;
   });
 }
@@ -549,14 +551,14 @@ async function applyRemoteBible(bookId, remoteBible) {
  */
 export async function reconcileBook(bookId, justPushed = new Set()) {
   const { token, owner, repo, defaultBranch } = await getGithubSettings();
-  if (!token || !owner || !repo) return { pulled: 0, conflicts: 0, skipped: true };
+  if (!token || !owner || !repo) return { pulled: 0, conflicts: 0, pulledTargets: new Set(), skipped: true };
 
   const ref = defaultBranch || "main";
   let remoteByPath;
   try {
     remoteByPath = await getBookRemoteTree(token, owner, repo, ref, bookId);
   } catch (err) {
-    return { pulled: 0, conflicts: 0, error: err.message };
+    return { pulled: 0, conflicts: 0, pulledTargets: new Set(), error: err.message };
   }
 
   const outbox = await dbGetAll("outbox");
@@ -566,6 +568,10 @@ export async function reconcileBook(bookId, justPushed = new Set()) {
 
   let pulled = 0;
   let conflicts = 0;
+  // Which specific things actually changed, so a caller mid-edit elsewhere in this book can
+  // merge in just these rather than reloading (and clobbering unsaved in-memory edits to)
+  // everything else — see mergePulledIntoData in persistence.js.
+  const pulledTargets = new Set();
   const prefix = `books/${bookId}/`;
 
   const manifestSha = remoteByPath.get(`${prefix}manifest.json`);
@@ -581,6 +587,7 @@ export async function reconcileBook(bookId, justPushed = new Set()) {
       await applyRemoteManifest(bookId, JSON.parse(blob.content), remoteByPath, token, owner, repo);
       await dbPut("manifestMeta", { ...meta, bookId, manifestSha });
       pulled += 1;
+      pulledTargets.add(`manifest:${bookId}`);
     }
   }
 
@@ -597,6 +604,7 @@ export async function reconcileBook(bookId, justPushed = new Set()) {
       await applyRemoteBible(bookId, JSON.parse(blob.content));
       await dbPut("manifestMeta", { ...meta2, bookId, bibleSha });
       pulled += 1;
+      pulledTargets.add(`bible:${bookId}`);
     }
   }
 
@@ -623,10 +631,11 @@ export async function reconcileBook(bookId, justPushed = new Set()) {
       await dbPut("scenes", { ...sc, ...parsed });
       await dbPut("sceneSync", { id: sc.id, bookId, remoteSha });
       pulled += 1;
+      pulledTargets.add(`scene:${sc.id}`);
     }
   }
 
-  return { pulled, conflicts };
+  return { pulled, conflicts, pulledTargets };
 }
 
 /* ---------------------------------------------------------------- */
