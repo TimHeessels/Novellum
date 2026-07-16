@@ -156,8 +156,9 @@ async function refreshRemoteChangeCheck(bookId) {
   if (remoteCheckInFlight || !bookId) return;
   remoteCheckInFlight = true;
   try {
-    const { hasChanges } = await checkRemoteChanges(bookId);
+    const { hasChanges, count } = await checkRemoteChanges(bookId);
     state.hasRemoteChanges = hasChanges;
+    state.remoteChangeCount = count;
     refreshSyncStatusUI();
   } catch (err) {
     console.error("Novellum: remote-change check failed", err);

@@ -10,9 +10,9 @@ import { state } from "./state.js";
 import {
   scheduleSave,
   listBooks, loadBook, setActiveBookId, getActiveBookId, persistNow, flushSaveNow,
-  saveUiPrefs, deleteBook, mergePulledIntoData,
+  saveUiPrefs, deleteBook,
 } from "./persistence.js";
-import { enqueueSync, ensureBookBootstrapped, getSyncStatus, pushChanges, pullChanges, checkRemoteChanges } from "./sync-engine.js";
+import { enqueueSync, ensureBookBootstrapped, getSyncStatus, pullChanges } from "./sync-engine.js";
 import { renderSettingsView } from "./settings-ui.js";
 import { renderOverviewView } from "./overview-ui.js";
 import { exportManuscript, exportEpub } from "./export.js";
@@ -570,7 +570,6 @@ function renderTopbar() {
       </div>
     </div>
     <div class="topbar-actions">
-      <button class="push-btn" id="pushBtn" style="display:none"></button>
       <button class="sync-status-badge" id="syncStatusBadge" title="Open sync settings">&hellip;</button>
     </div>
   `;
@@ -600,30 +599,17 @@ function renderTopbar() {
   if (openSettingsBtn) openSettingsBtn.onclick = openSettings;
 
   document.getElementById("syncStatusBadge").onclick = openSettings;
-  document.getElementById("pushBtn").onclick = handlePushClick;
   refreshSyncStatusUI();
 }
 
-/** Updates the topbar Push button, the GitHub Settings badge, and the conflict/setup/pull
- *  banners from current IndexedDB state. Called after every topbar render and on a timer, so it
- *  stays current between actions without needing a full app re-render. Leaves the Push button and
- *  pull banner alone while a push/pull is actually in flight (see pushInFlight/pullInFlight below)
- *  so it doesn't stomp their "Pushing…"/"Pulling…" feedback. */
+/** Updates the GitHub Settings badge and the conflict/setup/pull banners from current IndexedDB
+ *  state. Called after every topbar render and on a timer, so it stays current between actions
+ *  without needing a full app re-render. Pushing and pulling only ever happen from the Sync
+ *  menu (settings-ui.js) now — this function and its banners are read-only status display. */
 async function refreshSyncStatusUI() {
   const status = await getSyncStatus();
   state.hasPendingSync = status.pendingCount > 0;
   state.syncConfigured = status.configured;
-
-  const pushBtn = document.getElementById("pushBtn");
-  if (pushBtn && !pushInFlight) {
-    if (status.configured && status.pendingCount > 0) {
-      pushBtn.style.display = "";
-      pushBtn.disabled = false;
-      pushBtn.textContent = `Push ${status.pendingCount} change${status.pendingCount > 1 ? "s" : ""}`;
-    } else {
-      pushBtn.style.display = "none";
-    }
-  }
 
   const badge = document.getElementById("syncStatusBadge");
   if (badge) {
@@ -631,6 +617,8 @@ async function refreshSyncStatusUI() {
     if (!status.configured) label = "Sync not set up";
     else if (status.conflictCount > 0) label = `${status.conflictCount} conflict${status.conflictCount > 1 ? "s" : ""}`;
     else if (state.syncPauseReason) label = "Sync error";
+    else if (status.pendingCount > 0) label = `Push ${status.pendingCount} change${status.pendingCount > 1 ? "s" : ""}`;
+    else if (state.remoteChangeCount > 0) label = `Pull ${state.remoteChangeCount} change${state.remoteChangeCount > 1 ? "s" : ""}`;
     else {
       const lastAt = [status.lastPushedAt, status.lastPulledAt].filter(Boolean).sort().pop();
       label = lastAt ? `Synced ${formatRelativeTime(lastAt)}` : "Not synced yet";
@@ -644,11 +632,7 @@ async function refreshSyncStatusUI() {
     if (status.conflictCount > 0) {
       const n = status.conflictCount;
       banner.style.display = "";
-      banner.innerHTML = `
-        <span>${n} sync conflict${n > 1 ? "s" : ""} need${n > 1 ? "" : "s"} your attention — nothing was overwritten automatically.</span>
-        <button class="banner-btn" id="conflictBannerBtn">Resolve</button>
-      `;
-      document.getElementById("conflictBannerBtn").onclick = openSettings;
+      banner.innerHTML = `<span>${n} sync conflict${n > 1 ? "s" : ""} need${n > 1 ? "" : "s"} your attention — nothing was overwritten automatically.</span>`;
     } else {
       banner.style.display = "none";
       banner.innerHTML = "";
@@ -666,11 +650,7 @@ async function refreshSyncStatusUI() {
         ? "GitHub sync isn't set up — your work is only saved on this device for now."
         : `Couldn't reach GitHub: ${state.syncPauseReason}`;
       setupBanner.style.display = "";
-      setupBanner.innerHTML = `
-        <span>${escapeHtml(message)}</span>
-        <button class="banner-btn" id="setupBannerBtn">Open Settings</button>
-      `;
-      document.getElementById("setupBannerBtn").onclick = openSettings;
+      setupBanner.innerHTML = `<span>${escapeHtml(message)}</span>`;
     } else {
       setupBanner.style.display = "none";
       setupBanner.innerHTML = "";
@@ -678,82 +658,17 @@ async function refreshSyncStatusUI() {
   }
 
   // Only ever shown from the read-only background check in main.js's refreshRemoteChangeCheck
-  // (state.hasRemoteChanges) — never toggled by an actual push/pull, so it can't flicker based on
-  // this device's own writes.
+  // (state.hasRemoteChanges) — never toggled by an actual pull, so it can't flicker based on this
+  // device's own writes. Pulling itself only happens from the Sync menu.
   const pullBanner = document.getElementById("pullBanner");
-  if (pullBanner && !pullInFlight) {
+  if (pullBanner) {
     if (status.configured && state.hasRemoteChanges) {
       pullBanner.style.display = "";
-      pullBanner.innerHTML = `
-        <span>New changes are available on GitHub.</span>
-        <button class="banner-btn" id="pullBannerBtn">Pull latest</button>
-      `;
-      document.getElementById("pullBannerBtn").onclick = handlePullClick;
+      pullBanner.innerHTML = `<span>New changes are available on GitHub — open Sync to pull.</span>`;
     } else {
       pullBanner.style.display = "none";
       pullBanner.innerHTML = "";
     }
-  }
-}
-
-let pushInFlight = false;
-
-/** The topbar Push button's click handler — the only thing in the app that ever pushes to
- *  GitHub. `force` bypasses each outbox entry's retry backoff, same reasoning as the old
- *  Settings "Sync Now" button: a user-initiated click should surface a real error rather than
- *  silently skipping a still-backed-off entry. */
-async function handlePushClick() {
-  if (pushInFlight) return;
-  pushInFlight = true;
-  const pushBtn = document.getElementById("pushBtn");
-  if (pushBtn) {
-    pushBtn.disabled = true;
-    pushBtn.textContent = "Pushing…";
-  }
-  try {
-    const pushResult = await pushChanges({ force: true });
-    state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
-  } catch (err) {
-    console.error("Novellum: push failed", err);
-  } finally {
-    pushInFlight = false;
-    refreshSyncStatusUI();
-  }
-}
-
-let pullInFlight = false;
-
-/** The pull banner's "Pull latest" click handler — the only thing in the app that ever applies a
- *  pull outside of switching books. Re-checks for remote changes afterward rather than just
- *  assuming none are left, since a pull that hit a conflict leaves that one file's "something's
- *  different on GitHub" state genuinely still true. */
-async function handlePullClick() {
-  if (pullInFlight) return;
-  pullInFlight = true;
-  const pullBannerBtn = document.getElementById("pullBannerBtn");
-  if (pullBannerBtn) {
-    pullBannerBtn.disabled = true;
-    pullBannerBtn.textContent = "Pulling…";
-  }
-  const bookId = getActiveBookId();
-  try {
-    const result = await pullChanges(bookId, {
-      onPulled: async (pulledTargets) => {
-        await mergePulledIntoData(bookId, pulledTargets);
-        if (!getSceneAndChapter(state.activeSceneId).scene) {
-          state.activeChapterId = data.chapters[0]?.id;
-          state.activeSceneId = data.chapters[0]?.scenes[0]?.id;
-        }
-      },
-    });
-    if (result.pulled > 0) render();
-    const check = await checkRemoteChanges(bookId).catch(() => ({ hasChanges: false }));
-    state.hasRemoteChanges = check.hasChanges;
-  } catch (err) {
-    console.error("Novellum: pull failed", err);
-  } finally {
-    pullInFlight = false;
-    refreshSyncStatusUI();
   }
 }
 

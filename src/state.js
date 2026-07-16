@@ -42,7 +42,9 @@ export const state = {
   hasPendingSync: false,
   syncConfigured: false,
   // Cached result of the latest read-only checkRemoteChanges() check (see main.js's
-  // refreshRemoteChangeCheck) — drives whether the "Pull latest" banner shows itself. Never set
-  // by an actual pull, only by that background check.
+  // refreshRemoteChangeCheck, also refreshed by settings-ui.js right after a Settings-driven
+  // pull) — drives the pull banner and the sync badge's "Pull N changes" label. Never set by an
+  // actual pull directly, only by that check.
   hasRemoteChanges: false,
+  remoteChangeCount: 0,
 };

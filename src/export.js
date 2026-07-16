@@ -96,6 +96,18 @@ export function buildManuscriptDocument(data) {
     .ms-chapter{page-break-before:always}
     .ms-chapter:first-of-type{page-break-before:avoid}
   }
+  /* Page number only, bottom-center — Chromium 131+/Safari 18.2+ render this from the page
+   * box itself, so it appears regardless of the browser's own "headers and footers" print
+   * option (which independently adds its own title/URL/date and can't be suppressed from the
+   * page — the user has to uncheck that in the print dialog to avoid the two overlapping). */
+  @page{
+    margin:0.85in 0.75in 0.9in 0.75in;
+    @bottom-center{
+      content: counter(page);
+      font: 400 10px 'Manrope', Arial, sans-serif;
+      color:#888;
+    }
+  }
 </style>
 </head>
 <body>

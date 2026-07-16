@@ -6,6 +6,7 @@ import {
   listOutbox, listConflicts, pushChanges, pullChanges, resolveConflictKeepMine, resolveConflictUseTheirs,
   getLocalContentForConflict, connectToRepo, isUsableVaultRepo, resolveAllConflicts, withSyncLock,
   listBookHistory, isBookClean, previewRestore, restoreToCommit,
+  previewPush, previewPull, checkRemoteChanges,
 } from "./sync-engine.js";
 import { getActiveBookId, exportDataAsJson, importDataFromJson } from "./persistence.js";
 import { diffLines, diffWords } from "./diff.js";
@@ -23,6 +24,19 @@ export async function renderSettingsView(container, callbacks) {
   const vaultLooksUsable = isConnected
     ? await isUsableVaultRepo(settings.owner, settings.repo, settings.defaultBranch).catch(() => true)
     : true;
+
+  const bookId = getActiveBookId();
+  // Freshly re-checked every render, same reasoning as vaultLooksUsable above — cheap (a tree
+  // fetch plus local sha comparisons, no blobs, see checkRemoteChanges) — and written straight
+  // through to `state` so the topbar badge/pull banner reflect reality immediately rather than
+  // waiting for main.js's 5-minute background poll to catch up (e.g. right after a pull below).
+  let remoteChangeCount = 0;
+  if (isConnected && bookId) {
+    const remoteCheck = await checkRemoteChanges(bookId).catch(() => ({ hasChanges: false, count: 0 }));
+    remoteChangeCount = remoteCheck.count;
+    state.hasRemoteChanges = remoteCheck.hasChanges;
+    state.remoteChangeCount = remoteCheck.count;
+  }
 
   container.innerHTML = `
     <div class="settings-view">
@@ -47,6 +61,10 @@ export async function renderSettingsView(container, callbacks) {
         </div>
 
         ${conflicts.length > 0 ? renderConflictsSection(conflicts) : ""}
+
+        ${isConnected && outbox.length > 0 ? renderPushSection(outbox.length) : ""}
+
+        ${remoteChangeCount > 0 ? renderPullSection(remoteChangeCount) : ""}
 
         <div class="settings-section">
           <div class="section-label">History</div>
@@ -288,6 +306,86 @@ export async function renderSettingsView(container, callbacks) {
     }
   });
 
+  const pushPreviewToggleBtn = document.getElementById("pushPreviewToggle");
+  if (pushPreviewToggleBtn) {
+    pushPreviewToggleBtn.onclick = async () => {
+      const panel = document.getElementById("pushPreviewPanel");
+      const isHidden = panel.style.display === "none";
+      panel.style.display = isHidden ? "block" : "none";
+      pushPreviewToggleBtn.textContent = isHidden ? "Hide Preview" : "Preview Changes";
+      if (isHidden && !panel.dataset.loaded) {
+        panel.dataset.loaded = "1";
+        await loadPushPreviewInto(panel);
+      }
+    };
+  }
+  const pushNowBtn = document.getElementById("pushNowBtn");
+  if (pushNowBtn) {
+    pushNowBtn.onclick = async () => {
+      pushNowBtn.disabled = true;
+      pushNowBtn.textContent = "Pushing…";
+      setStatus("syncStatus", "Pushing…", false);
+      try {
+        const pushResult = await pushChanges({ force: true });
+        await renderSettingsView(container, callbacks);
+        setStatus(
+          "syncStatus",
+          pushResult.paused
+            ? `Couldn't push: ${pushResult.pauseReason}`
+            : `Pushed ${pushResult.pushed} file(s), ${pushResult.conflicts} conflict(s).`,
+          !!pushResult.paused || pushResult.conflicts > 0
+        );
+        if (onSyncStatusChanged) onSyncStatusChanged();
+      } catch (err) {
+        pushNowBtn.disabled = false;
+        pushNowBtn.textContent = "Push Now";
+        setStatus("syncStatus", `Push failed: ${err.message}`, true);
+      }
+    };
+  }
+
+  const pullPreviewToggleBtn = document.getElementById("pullPreviewToggle");
+  if (pullPreviewToggleBtn) {
+    pullPreviewToggleBtn.onclick = async () => {
+      const panel = document.getElementById("pullPreviewPanel");
+      const isHidden = panel.style.display === "none";
+      panel.style.display = isHidden ? "block" : "none";
+      pullPreviewToggleBtn.textContent = isHidden ? "Hide Preview" : "Preview Changes";
+      if (isHidden && !panel.dataset.loaded) {
+        panel.dataset.loaded = "1";
+        await loadPullPreviewInto(panel, bookId);
+      }
+    };
+  }
+  const pullNowBtn = document.getElementById("pullNowBtn");
+  if (pullNowBtn) {
+    pullNowBtn.onclick = async () => {
+      pullNowBtn.disabled = true;
+      pullNowBtn.textContent = "Pulling…";
+      setStatus("syncStatus", "Pulling…", false);
+      try {
+        const result = await pullChanges(bookId, {
+          onPulled: async () => {
+            if (callbacks.notifyBookDataChanged) await callbacks.notifyBookDataChanged(bookId);
+          },
+        });
+        // Re-check right away rather than trusting the pre-pull remoteChangeCount — a pull that
+        // hit a conflict on one target leaves that target's "something's different" state
+        // genuinely still true, and main.js's background poll won't catch up for up to 5 minutes.
+        const recheck = await checkRemoteChanges(bookId).catch(() => ({ hasChanges: false, count: 0 }));
+        state.hasRemoteChanges = recheck.hasChanges;
+        state.remoteChangeCount = recheck.count;
+        await renderSettingsView(container, callbacks);
+        setStatus("syncStatus", `Pulled ${result.pulled} file(s), ${result.conflicts} conflict(s).`, result.conflicts > 0);
+        if (onSyncStatusChanged) onSyncStatusChanged();
+      } catch (err) {
+        pullNowBtn.disabled = false;
+        pullNowBtn.textContent = "Pull Now";
+        setStatus("syncStatus", `Pull failed: ${err.message}`, true);
+      }
+    };
+  }
+
   const historyBrowseBtn = document.getElementById("historyBrowse");
   if (historyBrowseBtn) {
     historyBrowseBtn.onclick = async () => {
@@ -409,6 +507,54 @@ function conflictTitle(c) {
   if (c.kind === "manifest") return "Manuscript structure";
   if (c.kind === "bible") return "Story bible";
   return "Scene";
+}
+
+/** Same idea as conflictTitle but works off an arbitrary raw string instead of a conflict record
+ *  — used by the push-preview rows, which have no conflict object at all. */
+function rawContentTitle(kind, raw) {
+  if (kind === "scene" && raw) {
+    try {
+      const title = markdownToScene(raw).title;
+      if (title) return title;
+    } catch {
+      // Fall through to the generic label below.
+    }
+  }
+  if (kind === "manifest") return "Manuscript structure";
+  if (kind === "bible") return "Story bible";
+  return "Scene";
+}
+
+function renderPushSection(count) {
+  return `
+    <div class="settings-section">
+      <div class="section-label">Push (${count} pending)</div>
+      <div class="settings-status" style="margin:0 0 8px">
+        What pushing right now would send to GitHub, across every book.
+      </div>
+      <div class="settings-actions-row">
+        <button class="tbtn" id="pushPreviewToggle">Preview Changes</button>
+        <button class="modal-btn done" id="pushNowBtn">Push Now</button>
+      </div>
+      <div id="pushPreviewPanel" style="display:none;margin-top:10px"></div>
+    </div>
+  `;
+}
+
+function renderPullSection(count) {
+  return `
+    <div class="settings-section">
+      <div class="section-label">Pull (${count} pending)</div>
+      <div class="settings-status" style="margin:0 0 8px">
+        What pulling right now would bring in from GitHub for this book.
+      </div>
+      <div class="settings-actions-row">
+        <button class="tbtn" id="pullPreviewToggle">Preview Changes</button>
+        <button class="modal-btn done" id="pullNowBtn">Pull Now</button>
+      </div>
+      <div id="pullPreviewPanel" style="display:none;margin-top:10px"></div>
+    </div>
+  `;
 }
 
 function renderConflictsSection(conflicts) {
@@ -658,8 +804,10 @@ async function loadSummaryInto(container, conflict) {
 }
 
 /** Renders a line-by-line diff of the two raw files (frontmatter and all) — the byte-exact
- *  fallback behind "Show raw file diff" for whoever wants to see everything. */
-function loadDiffInto(container, conflict, localContent) {
+ *  fallback behind "Show raw file diff" for whoever wants to see everything. `addLabel` lets
+ *  callers outside conflict resolution (e.g. the push preview, where there's no "keep mine"
+ *  decision to make) use wording that fits their own context. */
+function loadDiffInto(container, conflict, localContent, addLabel = "+ Your local version (Keep Mine)") {
   const rows = diffLines(conflict.remoteContent || "", localContent);
   const linesHtml = rows
     .map(({ type, text }) => {
@@ -671,10 +819,235 @@ function loadDiffInto(container, conflict, localContent) {
   container.innerHTML = `
     <div class="diff-legend">
       <span class="diff-legend-item diff-legend-remove">&minus; GitHub's version</span>
-      <span class="diff-legend-item diff-legend-add">+ Your local version (Keep Mine)</span>
+      <span class="diff-legend-item diff-legend-add">${addLabel}</span>
     </div>
     <div class="diff-body">${linesHtml}</div>
   `;
+}
+
+/* ---------------------------------------------------------------- */
+/* Push / pull preview                                               */
+/* ---------------------------------------------------------------- */
+
+const PUSH_CHANGE_LABEL = {
+  create: "New file — not yet on GitHub",
+  delete: "Deleted locally — would remove this file from GitHub",
+  noop: "Nothing to push (already absent on GitHub)",
+  unchanged: "No content difference from GitHub's version",
+  update: "Changed since last push",
+};
+
+/** Lazily loads and renders what pushing right now would actually send — one row per outbox
+ *  entry (across every book, matching pushChanges's own scope), each with its own "View Changes"
+ *  toggle. The "Push Now" button itself lives outside this panel (see renderPushSection) so it
+ *  works whether or not the preview has been expanded. */
+async function loadPushPreviewInto(panel) {
+  panel.innerHTML = `<div class="diff-loading">Loading&hellip;</div>`;
+  const { entries } = await previewPush();
+
+  if (entries.length === 0) {
+    panel.innerHTML = `<div class="diff-empty">Nothing pending.</div>`;
+    return;
+  }
+
+  const multiBook = new Set(entries.map((e) => e.bookId)).size > 1;
+  const bookTitle = (id) => state.books.find((b) => b.id === id)?.title || id;
+
+  const rowsHtml = entries
+    .map((e) => {
+      const showToggle = e.changeType !== "noop";
+      return `
+    <div class="conflict-row">
+      <div class="conflict-row-head">
+        <div>
+          ${escapeHtml(rawContentTitle(e.kind, e.localRaw || e.remoteRaw))}
+          <div class="settings-status" style="margin:2px 0 0">
+            ${escapeHtml(PUSH_CHANGE_LABEL[e.changeType])}${multiBook ? ` &middot; ${escapeHtml(bookTitle(e.bookId))}` : ""}
+          </div>
+        </div>
+        ${showToggle ? `<div class="conflict-actions"><button class="tbtn" id="pushEntryToggle-${e.key}">View Changes</button></div>` : ""}
+      </div>
+      ${showToggle ? `<div class="conflict-diff" id="pushEntryDiff-${e.key}" style="display:none"></div>` : ""}
+    </div>`;
+    })
+    .join("");
+
+  panel.innerHTML = rowsHtml;
+
+  entries.forEach((e) => {
+    const toggleBtn = document.getElementById(`pushEntryToggle-${e.key}`);
+    if (!toggleBtn) return;
+    toggleBtn.onclick = () => {
+      const diffEl = document.getElementById(`pushEntryDiff-${e.key}`);
+      const isHidden = diffEl.style.display === "none";
+      diffEl.style.display = isHidden ? "block" : "none";
+      toggleBtn.textContent = isHidden ? "Hide Changes" : "View Changes";
+      if (isHidden && !diffEl.dataset.loaded) {
+        diffEl.dataset.loaded = "1";
+        loadPushEntryDiffInto(diffEl, e);
+      }
+    };
+  });
+}
+
+/** Field-level diff for an "update" row — reuses summarizeConflict via a fake conflict-shaped
+ *  object ({kind, remoteContent}), plus the same "Show raw file diff" fallback conflict rows use.
+ *  For create/delete/unchanged rows there's no meaningful field diff (nothing on one side, or the
+ *  two sides are identical) — just show the raw byte diff directly. */
+function loadPushEntryDiffInto(diffEl, entry) {
+  const fakeConflict = { kind: entry.kind, remoteContent: entry.remoteRaw };
+  if (entry.changeType !== "update") {
+    loadDiffInto(diffEl, fakeConflict, entry.localRaw || "", "+ Your local version (would be pushed)");
+    return;
+  }
+
+  let fields;
+  try {
+    fields = summarizeConflict(fakeConflict, entry.localRaw);
+  } catch {
+    fields = null;
+  }
+
+  const rawToggleHtml = `
+    <button class="tbtn-inline" id="pushRawDiffToggle-${entry.key}">Show raw file diff</button>
+    <div class="conflict-diff" id="pushRawDiff-${entry.key}" style="display:none"></div>
+  `;
+
+  if (!fields || fields.length === 0) {
+    diffEl.innerHTML = `<div class="conflict-nochange">No field-level differences detected.</div>${rawToggleHtml}`;
+  } else {
+    const fieldsHtml = fields
+      .map(
+        (f) => `
+      <div class="conflict-field">
+        <div class="conflict-field-label">${escapeHtml(f.label)}</div>
+        <div class="conflict-field-body${f.prose ? " conflict-field-body-prose" : ""}">${f.html}</div>
+      </div>`
+      )
+      .join("");
+    diffEl.innerHTML = `
+      <div class="worddiff-legend">
+        <span class="worddiff-legend-item"><span class="worddiff-remove">struck</span> = GitHub's current version</span>
+        <span class="worddiff-legend-item"><span class="worddiff-add">underlined</span> = your local version (would be pushed)</span>
+      </div>
+      ${fieldsHtml}
+      ${rawToggleHtml}
+    `;
+  }
+
+  const rawToggle = document.getElementById(`pushRawDiffToggle-${entry.key}`);
+  rawToggle.onclick = () => {
+    const rawEl = document.getElementById(`pushRawDiff-${entry.key}`);
+    const isHidden = rawEl.style.display === "none";
+    rawEl.style.display = isHidden ? "block" : "none";
+    rawToggle.textContent = isHidden ? "Hide raw file diff" : "Show raw file diff";
+    if (isHidden && !rawEl.dataset.loaded) {
+      rawEl.dataset.loaded = "1";
+      loadDiffInto(rawEl, fakeConflict, entry.localRaw || "", "+ Your local version (would be pushed)");
+    }
+  };
+}
+
+/** Lazily loads and renders what pulling right now would bring in for one book — same field-diff
+ *  rendering (summarizeManifest/summarizeBible/summarizeScene) loadRestorePreviewInto uses for
+ *  history, plus a warning on any target a pending local edit would turn into a conflict instead
+ *  of a clean fast-forward. The "Pull Now" button lives outside this panel (see
+ *  renderPullSection), same reasoning as the push preview above. */
+async function loadPullPreviewInto(panel, bookId) {
+  panel.innerHTML = `<div class="diff-loading">Loading&hellip;</div>`;
+  let preview;
+  try {
+    preview = await previewPull(bookId);
+  } catch (err) {
+    panel.innerHTML = `<div class="diff-empty">Couldn't load remote changes: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  if (preview.error) {
+    panel.innerHTML = `<div class="diff-empty">Couldn't load remote changes: ${escapeHtml(preview.error)}</div>`;
+    return;
+  }
+
+  const fieldHtml = (f) => `
+    <div class="conflict-field">
+      <div class="conflict-field-label">${escapeHtml(f.label)}</div>
+      <div class="conflict-field-body${f.prose ? " conflict-field-body-prose" : ""}">${f.html}</div>
+    </div>`;
+  const dirtyNote = (label) =>
+    `<div class="settings-status error" style="margin:0 0 6px">You have unpushed changes to ${label} — pulling would flag this as a conflict instead of applying automatically.</div>`;
+
+  let manifestBlockHtml = "";
+  if (preview.manifestChanged) {
+    let fields = [];
+    try {
+      fields = summarizeManifest(preview.manifestRemoteRaw, preview.manifestCurrentRaw);
+    } catch {
+      fields = [];
+    }
+    manifestBlockHtml = (preview.manifestDirty ? dirtyNote("the manuscript structure") : "") + fields.map(fieldHtml).join("");
+  }
+
+  let bibleBlockHtml = "";
+  if (preview.bibleChanged) {
+    let fields = [];
+    try {
+      fields = summarizeBible(preview.bibleRemoteRaw, preview.bibleCurrentRaw);
+    } catch {
+      fields = [];
+    }
+    bibleBlockHtml = (preview.bibleDirty ? dirtyNote("the story bible") : "") + fields.map(fieldHtml).join("");
+  }
+
+  if (!manifestBlockHtml && !bibleBlockHtml && preview.changedScenes.length === 0) {
+    panel.innerHTML = `<div class="conflict-nochange">No differences — pulling wouldn't change anything.</div>`;
+    return;
+  }
+
+  const sceneRowsHtml = preview.changedScenes
+    .map((sc) => {
+      let sceneFields = [];
+      try {
+        sceneFields = summarizeScene(sc.remoteRaw, sc.currentRaw);
+      } catch {
+        sceneFields = [];
+      }
+      const status = sc.dirty
+        ? "You have unpushed changes here — pulling would create a conflict instead of applying automatically."
+        : null;
+      const sceneFieldsHtml = sceneFields.map(fieldHtml).join("");
+      return `
+    <div class="conflict-row">
+      <div class="conflict-row-head">
+        <div>
+          ${escapeHtml(sc.title)}
+          ${status ? `<div class="settings-status error" style="margin:2px 0 0">${status}</div>` : ""}
+        </div>
+        ${sceneFieldsHtml ? `<div class="conflict-actions"><button class="tbtn" id="pullPreviewSceneToggle-${sc.id}">View Changes</button></div>` : ""}
+      </div>
+      ${sceneFieldsHtml ? `<div class="conflict-diff" id="pullPreviewSceneDiff-${sc.id}" style="display:none">${sceneFieldsHtml}</div>` : ""}
+    </div>`;
+    })
+    .join("");
+
+  panel.innerHTML = `
+    <div class="worddiff-legend">
+      <span class="worddiff-legend-item"><span class="worddiff-remove">struck</span> = only on GitHub (would be pulled in)</span>
+      <span class="worddiff-legend-item"><span class="worddiff-add">underlined</span> = only in your current version (replaced, unless flagged as a conflict below)</span>
+    </div>
+    ${manifestBlockHtml}
+    ${bibleBlockHtml}
+    ${preview.changedScenes.length ? `<div class="conflict-field-label" style="margin-top:14px">Scenes (${preview.changedScenes.length})</div>${sceneRowsHtml}` : ""}
+  `;
+
+  preview.changedScenes.forEach((sc) => {
+    const toggleBtn = document.getElementById(`pullPreviewSceneToggle-${sc.id}`);
+    if (!toggleBtn) return;
+    toggleBtn.onclick = () => {
+      const sceneDiffEl = document.getElementById(`pullPreviewSceneDiff-${sc.id}`);
+      const isHidden = sceneDiffEl.style.display === "none";
+      sceneDiffEl.style.display = isHidden ? "block" : "none";
+      toggleBtn.textContent = isHidden ? "Hide Changes" : "View Changes";
+    };
+  });
 }
 
 /* ---------------------------------------------------------------- */

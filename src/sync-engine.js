@@ -193,9 +193,8 @@ export function pushChanges({ force = false } = {}) {
  *  right after a pull that actually changed something (`pulled > 0`) — for callers that need to
  *  refresh the in-memory `data` object (or otherwise react) atomically with the pull, so nothing
  *  else queued on the lock can slip in between "IndexedDB updated" and "the refresh caught up to
- *  it" (see withSyncLock's comment above). Called with the pull's `pulledTargets` set so callers
- *  can merge in just what changed instead of reloading everything (see mergePulledIntoData in
- *  persistence.js). */
+ *  it" (see withSyncLock's comment above). Called with the pull's `pulledTargets` set, in case a
+ *  caller wants to react to specifically what changed rather than reloading everything. */
 export function pullChanges(bookId, { onPulled } = {}) {
   return withSyncLock(async () => {
     const pullResult = await reconcileBook(bookId);
@@ -570,9 +569,8 @@ export async function reconcileBook(bookId, justPushed = new Set()) {
 
   let pulled = 0;
   let conflicts = 0;
-  // Which specific things actually changed, so a caller mid-edit elsewhere in this book can
-  // merge in just these rather than reloading (and clobbering unsaved in-memory edits to)
-  // everything else — see mergePulledIntoData in persistence.js.
+  // Which specific things actually changed, in case a caller wants to react to just these rather
+  // than reloading everything.
   const pulledTargets = new Set();
   const prefix = `books/${bookId}/`;
 
@@ -641,29 +639,33 @@ export async function reconcileBook(bookId, justPushed = new Set()) {
 }
 
 /** Read-only check for whether GitHub has anything newer than what this device already knows
- *  about for this book — used only to decide whether the "Pull latest" banner should show
- *  itself. Never writes anything locally and never resolves a conflict; pullChanges (reconcileBook)
- *  is what actually applies (or conflicts on) whatever this finds. Same cost/shape as a `git
- *  fetch` versus a `git pull` — a tree read and a handful of local sha comparisons, no blob
- *  downloads. */
+ *  about for this book — drives the pull banner/badge. Never writes anything locally and never
+ *  resolves a conflict; pullChanges (reconcileBook) is what actually applies (or conflicts on)
+ *  whatever this finds. Same cost/shape as a `git fetch` versus a `git pull` — a tree read and a
+ *  handful of local sha comparisons, no blob downloads. Returns a `count` (how many of
+ *  manifest/bible/scenes differ) alongside `hasChanges` so the topbar badge and the Settings Pull
+ *  section can both show "how many" without any extra network calls — comparisons keep going
+ *  instead of returning as soon as the first difference is found. */
 export async function checkRemoteChanges(bookId) {
+  if (!bookId) return { hasChanges: false, count: 0 };
   const { token, owner, repo, defaultBranch } = await getGithubSettings();
-  if (!token || !owner || !repo || !bookId) return { hasChanges: false };
+  if (!token || !owner || !repo) return { hasChanges: false, count: 0 };
 
   let remoteByPath;
   try {
     remoteByPath = await getBookRemoteTree(token, owner, repo, defaultBranch || "main", bookId);
   } catch {
-    return { hasChanges: false };
+    return { hasChanges: false, count: 0 };
   }
 
   const prefix = `books/${bookId}/`;
   const meta = (await dbGet("manifestMeta", bookId)) || {};
+  let count = 0;
   if (remoteByPath.has(`${prefix}manifest.json`) && remoteByPath.get(`${prefix}manifest.json`) !== meta.manifestSha) {
-    return { hasChanges: true };
+    count += 1;
   }
   if (remoteByPath.has(`${prefix}bible.json`) && remoteByPath.get(`${prefix}bible.json`) !== meta.bibleSha) {
-    return { hasChanges: true };
+    count += 1;
   }
 
   // Only scenes this device already knows about can be "changed remotely" independent of the
@@ -679,10 +681,124 @@ export async function checkRemoteChanges(bookId) {
   const syncById = new Map(sceneSyncRows.map((s) => [s.id, s]));
   for (const sc of localScenes) {
     const remoteSha = remoteByPath.get(`${prefix}scenes/${sc.id}.md`);
-    if (remoteSha && remoteSha !== syncById.get(sc.id)?.remoteSha) return { hasChanges: true };
+    if (remoteSha && remoteSha !== syncById.get(sc.id)?.remoteSha) count += 1;
   }
 
-  return { hasChanges: false };
+  return { hasChanges: count > 0, count };
+}
+
+/**
+ * Read-only preview of what pushing right now would send to GitHub — every current outbox entry
+ * (all books, matching drainOutbox's own scope), paired with its local content
+ * (getLocalContentForConflict — the same serialization pushOne would actually send) and its
+ * current remote content (gh.getFile — null if the file doesn't exist on GitHub yet). Never
+ * writes anything, never touches the outbox itself. Reads run in parallel since, unlike
+ * drainOutbox's writes, there's no per-entry failure/retry bookkeeping to serialize around.
+ */
+export async function previewPush() {
+  const { token, owner, repo } = await getGithubSettings();
+  if (!token || !owner || !repo) return { entries: [] };
+
+  const outbox = await dbGetAll("outbox");
+  const entries = await Promise.all(
+    outbox.map(async (entry) => {
+      const path = pathForEntry(entry);
+      const [localRaw, remote] = await Promise.all([
+        getLocalContentForConflict(entry),
+        gh.getFile(token, owner, repo, path).catch(() => null),
+      ]);
+      const remoteRaw = remote ? remote.content : null;
+
+      let changeType;
+      if (localRaw === null && remoteRaw === null) changeType = "noop";
+      else if (localRaw === null) changeType = "delete";
+      else if (remoteRaw === null) changeType = "create";
+      else if (localRaw === remoteRaw) changeType = "unchanged";
+      else changeType = "update";
+
+      return { key: entry.key, bookId: entry.bookId, kind: entry.kind, targetId: entry.targetId, path, changeType, localRaw, remoteRaw };
+    })
+  );
+
+  return { entries };
+}
+
+/**
+ * Read-only preview of what pulling right now would bring in for one book — the read-only
+ * sibling of reconcileBook. For manifest, bible, and every scene this device already knows about:
+ * if the remote sha differs from what was last synced, fetch the remote blob and pair it with the
+ * current local content. Flags `dirty: true` when a pending outbox entry means reconcileBook
+ * would record a conflict for that target instead of fast-forwarding it. Deliberately doesn't
+ * detect brand-new remote scenes (referenced by the remote manifest but not yet adopted locally)
+ * — summarizeManifest's own "Chapters added/removed"/"Scene placement" fields already surface
+ * that structural change, and reconcileBook itself only previews scene *content* for scenes that
+ * already exist locally, same as this function.
+ */
+export async function previewPull(bookId) {
+  const emptyShape = {
+    manifestChanged: false, manifestDirty: false, manifestCurrentRaw: null, manifestRemoteRaw: null,
+    bibleChanged: false, bibleDirty: false, bibleCurrentRaw: null, bibleRemoteRaw: null,
+    changedScenes: [],
+  };
+  const { token, owner, repo, defaultBranch } = await getGithubSettings();
+  if (!token || !owner || !repo) return { ...emptyShape, skipped: true };
+
+  const ref = defaultBranch || "main";
+  let remoteByPath;
+  try {
+    remoteByPath = await getBookRemoteTree(token, owner, repo, ref, bookId);
+  } catch (err) {
+    return { ...emptyShape, error: err.message };
+  }
+
+  const outbox = await dbGetAll("outbox");
+  const dirtyKeys = new Set(outbox.filter((e) => e.bookId === bookId).map((e) => `${e.kind}:${e.targetId}`));
+  const prefix = `books/${bookId}/`;
+  const meta = (await dbGet("manifestMeta", bookId)) || {};
+
+  let manifestChanged = false, manifestDirty = false, manifestCurrentRaw = null, manifestRemoteRaw = null;
+  const manifestSha = remoteByPath.get(`${prefix}manifest.json`);
+  if (manifestSha && manifestSha !== meta.manifestSha) {
+    manifestChanged = true;
+    manifestDirty = dirtyKeys.has(`manifest:${bookId}`);
+    [manifestCurrentRaw, manifestRemoteRaw] = await Promise.all([
+      getLocalContentForConflict({ bookId, kind: "manifest", targetId: bookId }),
+      gh.getBlob(token, owner, repo, manifestSha).then((b) => b.content),
+    ]);
+  }
+
+  let bibleChanged = false, bibleDirty = false, bibleCurrentRaw = null, bibleRemoteRaw = null;
+  const bibleSha = remoteByPath.get(`${prefix}bible.json`);
+  if (bibleSha && bibleSha !== meta.bibleSha) {
+    bibleChanged = true;
+    bibleDirty = dirtyKeys.has(`bible:${bookId}`);
+    [bibleCurrentRaw, bibleRemoteRaw] = await Promise.all([
+      getLocalContentForConflict({ bookId, kind: "bible", targetId: bookId }),
+      gh.getBlob(token, owner, repo, bibleSha).then((b) => b.content),
+    ]);
+  }
+
+  // Scenes — only ones already local, matching reconcileBook's own scope (see doc comment above).
+  const [localScenes, sceneSyncRows] = await Promise.all([
+    dbGetAllByIndex("scenes", "bookId", bookId),
+    dbGetAllByIndex("sceneSync", "bookId", bookId),
+  ]);
+  const syncById = new Map(sceneSyncRows.map((s) => [s.id, s]));
+  const toFetch = localScenes
+    .map((sc) => ({ sc, remoteSha: remoteByPath.get(`${prefix}scenes/${sc.id}.md`), knownSha: syncById.get(sc.id)?.remoteSha }))
+    .filter(({ remoteSha, knownSha }) => remoteSha && remoteSha !== knownSha);
+
+  const changedScenes = await Promise.all(
+    toFetch.map(async ({ sc, remoteSha }) => {
+      const [currentRaw, remoteRaw] = await Promise.all([
+        getLocalContentForConflict({ bookId, kind: "scene", targetId: sc.id }),
+        gh.getBlob(token, owner, repo, remoteSha).then((b) => b.content),
+      ]);
+      return { id: sc.id, title: sc.title, dirty: dirtyKeys.has(`scene:${sc.id}`), currentRaw, remoteRaw };
+    })
+  );
+
+  return { manifestChanged, manifestDirty, manifestCurrentRaw, manifestRemoteRaw, bibleChanged, bibleDirty, bibleCurrentRaw, bibleRemoteRaw, changedScenes };
 }
 
 /* ---------------------------------------------------------------- */
