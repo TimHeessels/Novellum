@@ -552,7 +552,6 @@ const VIEW_MODE_LABEL = { scene: "Current scene", chapter: "Current chapter", fu
 
 function renderTopbar() {
   const currentTitle = data.title || "Untitled Book";
-  document.title = `${currentTitle} — Novellum`;
   topbarEl.innerHTML = `
     <div class="book-switcher">
       <button class="book-switcher-btn" id="bookSwitcherBtn">${escapeHtml(currentTitle)} <span class="caret">&#9662;</span></button>
@@ -625,7 +624,28 @@ async function refreshSyncStatusUI() {
     }
     badge.textContent = label;
     badge.classList.toggle("has-conflicts", status.conflictCount > 0);
+    // Outbox entries get queued locally the moment a book is bootstrapped, regardless of whether
+    // GitHub is even connected yet — gate on `configured` too, or this (and the title below) would
+    // light up as "pending" while the label itself still says "Sync not set up".
+    badge.classList.toggle(
+      "has-pending",
+      status.configured && status.conflictCount === 0 && (status.pendingCount > 0 || state.remoteChangeCount > 0)
+    );
   }
+
+  // Tab title mirrors the badge's own priority (conflicts, then pending push, then pending pull)
+  // so the two never tell conflicting stories — visible even when this tab isn't focused.
+  let titleSuffix = "";
+  if (status.configured) {
+    if (status.conflictCount > 0) {
+      titleSuffix = ` (${status.conflictCount} conflict${status.conflictCount > 1 ? "s" : ""})`;
+    } else if (status.pendingCount > 0) {
+      titleSuffix = ` (${status.pendingCount} change${status.pendingCount > 1 ? "s" : ""})`;
+    } else if (state.remoteChangeCount > 0) {
+      titleSuffix = ` (${state.remoteChangeCount} change${state.remoteChangeCount > 1 ? "s" : ""})`;
+    }
+  }
+  document.title = `Novellum${titleSuffix}`;
 
   const banner = document.getElementById("conflictBanner");
   if (banner) {

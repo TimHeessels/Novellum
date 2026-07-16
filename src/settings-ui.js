@@ -40,6 +40,13 @@ export async function renderSettingsView(container, callbacks) {
 
   container.innerHTML = `
     <div class="settings-view">
+      ${isConnected ? `
+        ${conflicts.length > 0 ? renderConflictsSection(conflicts) : ""}
+        ${outbox.length > 0 ? renderPushSection(outbox.length) : ""}
+        ${remoteChangeCount > 0 ? renderPullSection(remoteChangeCount) : ""}
+        <div id="syncStatus" class="settings-status"></div>
+      ` : ""}
+
       <div class="settings-header">
         <button class="tbtn" id="settingsBack">&lsaquo; Back to Manuscript</button>
         <h2>GitHub Sync Settings</h2>
@@ -57,14 +64,7 @@ export async function renderSettingsView(container, callbacks) {
           <div>Last pushed: ${settings.lastPushedAt ? formatRelativeTime(settings.lastPushedAt) : "Never"}</div>
           <div>Last pulled: ${settings.lastPulledAt ? formatRelativeTime(settings.lastPulledAt) : "Never"}</div>
           <div>Pending changes: ${outbox.length}</div>
-          <div id="syncStatus" class="settings-status"></div>
         </div>
-
-        ${conflicts.length > 0 ? renderConflictsSection(conflicts) : ""}
-
-        ${isConnected && outbox.length > 0 ? renderPushSection(outbox.length) : ""}
-
-        ${remoteChangeCount > 0 ? renderPullSection(remoteChangeCount) : ""}
 
         <div class="settings-section">
           <div class="section-label">History</div>
