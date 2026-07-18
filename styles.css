@@ -194,8 +194,11 @@ button{font-family:inherit}
   position:sticky;top:-45px;z-index:2;background:var(--bg);
   margin:0 -60px 26px;padding:12px 60px;
 }
+.overview-header-title{display:flex;flex-direction:column;gap:2px}
 .overview-title{font:600 20px 'Lora',serif;color:var(--text-strong);margin:0}
+.overview-total-wordcount{font-size:12px;font-weight:600;color:var(--text-muted)}
 
+.overview-toggles{display:flex;align-items:center;gap:8px}
 .overview-todo-toggle{display:flex;align-items:center;gap:9px;cursor:pointer;padding:4px 6px;border-radius:8px;user-select:none}
 .overview-todo-toggle:hover{background:var(--hover-bg-2)}
 .overview-todo-toggle-label{font-size:11.5px;font-weight:600;color:var(--text-muted)}
@@ -214,24 +217,38 @@ button{font-family:inherit}
 .toggle-switch.on .toggle-knob{transform:translateX(12px)}
 
 .overview-chapters{display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));column-gap:24px;row-gap:48px;align-items:start}
+.overview-chapters.chapters-only{grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));row-gap:16px}
 .overview-chapters.highlight-todos .overview-scene-card:not(.has-todos){opacity:.55}
 .overview-chapters.highlight-todos .overview-scene-card.has-todos{border-color:oklch(0.42 0.01 75)}
-.overview-chapters.highlight-todos .overview-chapter-title:not(.has-todos){opacity:.55}
+.overview-chapters.highlight-todos .overview-chapter-title:not(.has-todos),
+.overview-chapters.highlight-todos .overview-chapter-status:not(.has-todos){opacity:.55}
+.overview-chapters.highlight-todos .overview-chapter-card:not(.has-todos){opacity:.55}
+.overview-chapters.highlight-todos .overview-chapter-card.has-todos{border-color:oklch(0.42 0.01 75)}
 .overview-chapter{min-width:0}
+
+.overview-chapter-card{
+  border:1px solid var(--card-border);border-radius:8px;padding:14px 16px;cursor:pointer;
+  transition:background .15s,border-color .15s;
+}
+.overview-chapter-card:hover{background:var(--hover-bg);border-color:var(--card-border-hover)}
+.overview-chapter-card-title{font:700 15px 'Lora',serif;color:var(--text-strong)}
+.overview-chapter-card .overview-chapter-status{margin:6px 0 0}
 .overview-chapter-title{
   font:700 17px 'Lora',serif;color:var(--text-strong);cursor:pointer;border-radius:6px;
-  padding:6px 8px;margin:0 0 12px -8px;display:inline-block;
+  padding:6px 8px;margin:0 0 2px -8px;display:inline-block;
 }
 .overview-chapter-title:hover{background:var(--hover-bg)}
+.overview-chapter-status{font-size:11.5px;font-weight:600;color:var(--text-muted);margin:0 0 12px 0}
 
 .overview-scene-list{display:flex;flex-direction:column;gap:10px}
 .overview-scene-card{
-  border:1px solid var(--card-border);border-radius:8px;padding:12px 14px;cursor:pointer;
+  position:relative;border:1px solid var(--card-border);border-radius:8px;padding:12px 14px;cursor:pointer;
   transition:background .15s,border-color .15s;
 }
 .overview-scene-card:hover{background:var(--hover-bg);border-color:var(--card-border-hover)}
-.overview-scene-title{font:600 13px 'Lora',serif;color:var(--text-strong);margin-bottom:6px}
+.overview-scene-title{font:600 13px 'Lora',serif;color:var(--text-strong);margin-bottom:6px;padding-right:50px}
 .overview-scene-summary{font-size:12.5px;line-height:1.6;color:var(--text-dim);margin-bottom:8px}
+.overview-scene-wordcount{position:absolute;top:12px;right:14px;font-size:11px;font-weight:600;color:var(--text-muted)}
 
 .overview-todo-list{display:flex;flex-direction:column;gap:1px;margin-top:2px}
 .overview-todo-row{pointer-events:none;padding:3px 0}

@@ -45,6 +45,26 @@ export function wordCount(text) {
   return ((text || "").trim().match(/\S+/g) || []).length;
 }
 
+/** Strips a scene body's rich-text HTML down to plain text before counting words in it —
+ *  sc.text is sanitized inline HTML (see sanitizeFormattingHtml below), not plain text. */
+function htmlToPlainText(html) {
+  const div = document.createElement("div");
+  div.innerHTML = html || "";
+  return div.textContent || "";
+}
+
+export function sceneWordCount(sc) {
+  return wordCount(htmlToPlainText(sc.text));
+}
+
+export function chapterWordCount(ch) {
+  return ch.scenes.reduce((sum, sc) => sum + sceneWordCount(sc), 0);
+}
+
+export function bookWordCount() {
+  return data.chapters.reduce((sum, ch) => sum + chapterWordCount(ch), 0);
+}
+
 /* ---------------------------------------------------------------- */
 /* Rich text formatting                                              */
 /* Scene body text (scene.text) is stored as a small, constrained    */

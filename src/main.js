@@ -137,6 +137,9 @@ function applyRestoredUiPrefs(prefs) {
   if (typeof prefs.rightOpen === "boolean") state.rightOpen = prefs.rightOpen;
   if (prefs.leftTab === "manuscript" || prefs.leftTab === "bible") state.leftTab = prefs.leftTab;
   if (["characters", "locations", "concepts"].includes(prefs.bibleTab)) state.bibleTab = prefs.bibleTab;
+  if (typeof prefs.overviewHighlightTodos === "boolean") state.overviewHighlightTodos = prefs.overviewHighlightTodos;
+  if (typeof prefs.overviewShowWordCounts === "boolean") state.overviewShowWordCounts = prefs.overviewShowWordCounts;
+  if (typeof prefs.overviewChaptersOnly === "boolean") state.overviewChaptersOnly = prefs.overviewChaptersOnly;
 
   // Only meaningful if we're actually restoring into overview — otherwise leave the fresh
   // state.js defaults alone rather than trusting a stale snapshot from a different session.

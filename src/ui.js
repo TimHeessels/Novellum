@@ -523,6 +523,9 @@ function persistUiPrefs() {
     viewBeforeOverview: state.viewBeforeOverview,
     leftOpenBeforeOverview: state.leftOpenBeforeOverview,
     rightOpenBeforeOverview: state.rightOpenBeforeOverview,
+    overviewHighlightTodos: state.overviewHighlightTodos,
+    overviewShowWordCounts: state.overviewShowWordCounts,
+    overviewChaptersOnly: state.overviewChaptersOnly,
   });
 }
 
@@ -929,10 +932,9 @@ function renderLeftPanel() {
         </div>
 
         <div class="section-label" style="margin-top:24px">Export</div>
-        <div class="settings-status" style="margin:0 0 10px">Download the full manuscript as a nicely formatted PDF.</div>
-        <button class="tbtn" data-action="export-manuscript">Export PDF</button>
-        <div class="settings-status" style="margin:10px 0 10px">Download the full manuscript as an EPUB e-book file.</div>
-        <button class="tbtn" data-action="export-epub">Export EPUB</button>
+        <div class="settings-status" style="margin:0 0 10px">Download the full manuscript as a nicely formatted document.</div>
+        <button class="tbtn" data-action="export-manuscript">Export as PDF</button>
+        <button class="tbtn" data-action="export-epub">Export as EPUB</button>
 
         <div class="section-label" style="margin-top:24px">Import</div>
         <div class="settings-status" style="margin:0 0 10px">Import a manuscript from Markdown.</div>
@@ -1367,6 +1369,19 @@ function renderCenter() {
       onToggleHighlightTodos: () => {
         state.overviewHighlightTodos = !state.overviewHighlightTodos;
         renderCenter();
+        persistUiPrefs();
+      },
+      showWordCounts: state.overviewShowWordCounts,
+      onToggleShowWordCounts: () => {
+        state.overviewShowWordCounts = !state.overviewShowWordCounts;
+        renderCenter();
+        persistUiPrefs();
+      },
+      chaptersOnly: state.overviewChaptersOnly,
+      onToggleChaptersOnly: () => {
+        state.overviewChaptersOnly = !state.overviewChaptersOnly;
+        renderCenter();
+        persistUiPrefs();
       },
     });
     return;
