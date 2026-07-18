@@ -97,6 +97,27 @@ function updateActiveSceneFromScroll() {
   const stickies = centerPanelEl.querySelectorAll(".scene-sticky[data-highlight-scene-id]");
   if (!stickies.length) return;
 
+  // A caret actively parked (and visible) in a scene's text is a stronger signal of "current
+  // scene" than which sticky header happens to be docked — otherwise a trailing sliver of the
+  // previous scene still sitting at the dock line keeps outranking the scene actually being
+  // typed into, fighting the user on every scroll/reflow tick. Only while that caret is still
+  // on screen, though: once the user scrolls it away entirely, fall through to the normal
+  // docked-header logic below instead of getting stuck on a scene that's no longer in view.
+  const focusedBlock = document.activeElement?.closest(".manuscript-text[data-scene-id]");
+  if (focusedBlock) {
+    const sel = window.getSelection();
+    const caretRects = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).getClientRects() : null;
+    const rect = caretRects && caretRects.length ? caretRects[0] : focusedBlock.getBoundingClientRect();
+    const panelRect = centerPanelEl.getBoundingClientRect();
+    if (rect.bottom > panelRect.top && rect.top < panelRect.bottom) {
+      const { chapter: ch, scene: sc } = getSceneAndChapter(focusedBlock.dataset.sceneId);
+      if (sc) {
+        setActiveScene(ch.id, sc.id);
+        return;
+      }
+    }
+  }
+
   // Scrolled to (or within a hair of) the bottom: always treat the final scene as current, even
   // if it's short enough that its header never reaches the dock line — otherwise a short last
   // scene could never become selected no matter how far you scroll into it.
