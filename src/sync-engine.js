@@ -195,9 +195,9 @@ export function pushChanges({ force = false } = {}) {
  *  else queued on the lock can slip in between "IndexedDB updated" and "the refresh caught up to
  *  it" (see withSyncLock's comment above). Called with the pull's `pulledTargets` set, in case a
  *  caller wants to react to specifically what changed rather than reloading everything. */
-export function pullChanges(bookId, { onPulled } = {}) {
+export function pullChanges(bookId, { onPulled, justPushed = new Set() } = {}) {
   return withSyncLock(async () => {
-    const pullResult = await reconcileBook(bookId);
+    const pullResult = await reconcileBook(bookId, justPushed);
     if (!pullResult.skipped) await patchGithubSettings({ lastPulledAt: new Date().toISOString() });
     if (onPulled && pullResult.pulled > 0) await onPulled(pullResult.pulledTargets);
     return pullResult;
@@ -645,8 +645,14 @@ export async function reconcileBook(bookId, justPushed = new Set()) {
  *  handful of local sha comparisons, no blob downloads. Returns a `count` (how many of
  *  manifest/bible/scenes differ) alongside `hasChanges` so the topbar badge and the Settings Pull
  *  section can both show "how many" without any extra network calls — comparisons keep going
- *  instead of returning as soon as the first difference is found. */
-export async function checkRemoteChanges(bookId) {
+ *  instead of returning as soon as the first difference is found.
+ *
+ *  `justPushed` (a `"kind:targetId"` Set, e.g. from pushChanges's `pushedTargets`) excludes
+ *  targets this same device just pushed successfully, same reasoning as reconcileBook's own
+ *  `justPushed` — GitHub's git-trees endpoint (used below) can lag a moment behind a just-made
+ *  Contents API commit, and without this, calling this right after a push (every caller does, to
+ *  refresh the pull banner) would misreport the device's own just-pushed changes as incoming. */
+export async function checkRemoteChanges(bookId, justPushed = new Set()) {
   if (!bookId) return { hasChanges: false, count: 0 };
   const { token, owner, repo, defaultBranch } = await getGithubSettings();
   if (!token || !owner || !repo) return { hasChanges: false, count: 0 };
@@ -661,10 +667,18 @@ export async function checkRemoteChanges(bookId) {
   const prefix = `books/${bookId}/`;
   const meta = (await dbGet("manifestMeta", bookId)) || {};
   let count = 0;
-  if (remoteByPath.has(`${prefix}manifest.json`) && remoteByPath.get(`${prefix}manifest.json`) !== meta.manifestSha) {
+  if (
+    remoteByPath.has(`${prefix}manifest.json`) &&
+    remoteByPath.get(`${prefix}manifest.json`) !== meta.manifestSha &&
+    !justPushed.has(`manifest:${bookId}`)
+  ) {
     count += 1;
   }
-  if (remoteByPath.has(`${prefix}bible.json`) && remoteByPath.get(`${prefix}bible.json`) !== meta.bibleSha) {
+  if (
+    remoteByPath.has(`${prefix}bible.json`) &&
+    remoteByPath.get(`${prefix}bible.json`) !== meta.bibleSha &&
+    !justPushed.has(`bible:${bookId}`)
+  ) {
     count += 1;
   }
 
@@ -681,7 +695,7 @@ export async function checkRemoteChanges(bookId) {
   const syncById = new Map(sceneSyncRows.map((s) => [s.id, s]));
   for (const sc of localScenes) {
     const remoteSha = remoteByPath.get(`${prefix}scenes/${sc.id}.md`);
-    if (remoteSha && remoteSha !== syncById.get(sc.id)?.remoteSha) count += 1;
+    if (remoteSha && remoteSha !== syncById.get(sc.id)?.remoteSha && !justPushed.has(`scene:${sc.id}`)) count += 1;
   }
 
   return { hasChanges: count > 0, count };
@@ -733,8 +747,14 @@ export async function previewPush() {
  * — summarizeManifest's own "Chapters added/removed"/"Scene placement" fields already surface
  * that structural change, and reconcileBook itself only previews scene *content* for scenes that
  * already exist locally, same as this function.
+ *
+ * `justPushed` (a `"kind:targetId"` Set, e.g. from pushChanges's `pushedTargets`) excludes targets
+ * this same device just pushed successfully — same lag reasoning as reconcileBook/
+ * checkRemoteChanges above: GitHub's git-trees endpoint (used below) can still show a just-pushed
+ * target's pre-push sha for a moment, which without this would preview the device's own
+ * just-pushed edit as an incoming remote change.
  */
-export async function previewPull(bookId) {
+export async function previewPull(bookId, justPushed = new Set()) {
   const emptyShape = {
     manifestChanged: false, manifestDirty: false, manifestCurrentRaw: null, manifestRemoteRaw: null,
     bibleChanged: false, bibleDirty: false, bibleCurrentRaw: null, bibleRemoteRaw: null,
@@ -758,7 +778,7 @@ export async function previewPull(bookId) {
 
   let manifestChanged = false, manifestDirty = false, manifestCurrentRaw = null, manifestRemoteRaw = null;
   const manifestSha = remoteByPath.get(`${prefix}manifest.json`);
-  if (manifestSha && manifestSha !== meta.manifestSha) {
+  if (manifestSha && manifestSha !== meta.manifestSha && !justPushed.has(`manifest:${bookId}`)) {
     manifestChanged = true;
     manifestDirty = dirtyKeys.has(`manifest:${bookId}`);
     [manifestCurrentRaw, manifestRemoteRaw] = await Promise.all([
@@ -769,7 +789,7 @@ export async function previewPull(bookId) {
 
   let bibleChanged = false, bibleDirty = false, bibleCurrentRaw = null, bibleRemoteRaw = null;
   const bibleSha = remoteByPath.get(`${prefix}bible.json`);
-  if (bibleSha && bibleSha !== meta.bibleSha) {
+  if (bibleSha && bibleSha !== meta.bibleSha && !justPushed.has(`bible:${bookId}`)) {
     bibleChanged = true;
     bibleDirty = dirtyKeys.has(`bible:${bookId}`);
     [bibleCurrentRaw, bibleRemoteRaw] = await Promise.all([
@@ -786,7 +806,7 @@ export async function previewPull(bookId) {
   const syncById = new Map(sceneSyncRows.map((s) => [s.id, s]));
   const toFetch = localScenes
     .map((sc) => ({ sc, remoteSha: remoteByPath.get(`${prefix}scenes/${sc.id}.md`), knownSha: syncById.get(sc.id)?.remoteSha }))
-    .filter(({ remoteSha, knownSha }) => remoteSha && remoteSha !== knownSha);
+    .filter(({ sc, remoteSha, knownSha }) => remoteSha && remoteSha !== knownSha && !justPushed.has(`scene:${sc.id}`));
 
   const changedScenes = await Promise.all(
     toFetch.map(async ({ sc, remoteSha }) => {

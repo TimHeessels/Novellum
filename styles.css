@@ -258,7 +258,10 @@ button{font-family:inherit}
 
 /* Left panel */
 .left-panel{flex:none;padding:16px 10px;overflow:auto;display:flex;flex-direction:column}
-.left-head{display:flex;justify-content:space-between;align-items:center;margin:2px 4px 12px}
+.left-head{
+  display:flex;justify-content:space-between;align-items:center;margin:2px -10px 12px;padding:0 10px;
+  position:sticky;top:-16px;z-index:2;background:var(--bg);
+}
 .left-tabs{display:flex;gap:2px;flex-wrap:wrap;background:var(--hover-bg);border-radius:8px;padding:3px}
 .left-tabs .tbtn{display:flex;align-items:center;gap:6px;padding:6px 8px;font-size:10.5px;border-radius:6px}
 .left-tabs .tbtn svg{width:12px;height:auto;flex:none}

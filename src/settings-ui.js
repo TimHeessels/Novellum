@@ -13,7 +13,7 @@ import { diffLines, diffWords } from "./diff.js";
 import { state } from "./state.js";
 import { startGithubLogin } from "./github-oauth.js";
 
-export async function renderSettingsView(container, callbacks) {
+export async function renderSettingsView(container, callbacks, { justPushed = new Set() } = {}) {
   const { onBack, notifyBookDataChanged, onSyncStatusChanged } = callbacks;
   const [settings, outbox, conflicts] = await Promise.all([getGithubSettings(), listOutbox(), listConflicts()]);
   const isConnected = !!(settings.token && settings.owner && settings.repo);
@@ -32,7 +32,7 @@ export async function renderSettingsView(container, callbacks) {
   // waiting for main.js's 5-minute background poll to catch up (e.g. right after a pull below).
   let remoteChangeCount = 0;
   if (isConnected && bookId) {
-    const remoteCheck = await checkRemoteChanges(bookId).catch(() => ({ hasChanges: false, count: 0 }));
+    const remoteCheck = await checkRemoteChanges(bookId, justPushed).catch(() => ({ hasChanges: false, count: 0 }));
     remoteChangeCount = remoteCheck.count;
     state.hasRemoteChanges = remoteCheck.hasChanges;
     state.remoteChangeCount = remoteCheck.count;
@@ -139,9 +139,10 @@ export async function renderSettingsView(container, callbacks) {
         const pushResult = await pushChanges({ force: true });
         await pullChanges(bookId, {
           onPulled: () => notifyBookDataChanged && notifyBookDataChanged(bookId),
+          justPushed: pushResult.pushedTargets,
         });
         state.syncPauseReason = pushResult.paused ? pushResult.pauseReason : null;
-        await renderSettingsView(container, callbacks);
+        await renderSettingsView(container, callbacks, { justPushed: pushResult.pushedTargets });
         if (onSyncStatusChanged) onSyncStatusChanged();
       } catch (err) {
         connectGrantedBtn.disabled = false;
@@ -218,7 +219,7 @@ export async function renderSettingsView(container, callbacks) {
       // shared force-push covers every conflict just re-queued, rather than one push each.
       const { count } = await resolveAllConflicts("mine");
       const pushResult = await pushChanges({ force: true });
-      await renderSettingsView(container, callbacks);
+      await renderSettingsView(container, callbacks, { justPushed: pushResult.pushedTargets });
       setStatus("syncStatus", `Resolved ${count} conflict(s). Pushed ${pushResult.pushed} file(s).`, false);
       if (onSyncStatusChanged) onSyncStatusChanged();
     };
@@ -278,7 +279,7 @@ export async function renderSettingsView(container, callbacks) {
         // user to notice nothing happened and hit the topbar Push button again themselves.
         await resolveConflictKeepMine(c.key);
         const pushResult = await pushChanges({ force: true });
-        await renderSettingsView(container, callbacks);
+        await renderSettingsView(container, callbacks, { justPushed: pushResult.pushedTargets });
         setStatus("syncStatus", `Resolved. Pushed ${pushResult.pushed} file(s), ${pushResult.conflicts} conflict(s).`, pushResult.conflicts > 0);
         if (onSyncStatusChanged) onSyncStatusChanged();
       };
@@ -327,7 +328,7 @@ export async function renderSettingsView(container, callbacks) {
       setStatus("syncStatus", "Pushing…", false);
       try {
         const pushResult = await pushChanges({ force: true });
-        await renderSettingsView(container, callbacks);
+        await renderSettingsView(container, callbacks, { justPushed: pushResult.pushedTargets });
         setStatus(
           "syncStatus",
           pushResult.paused
@@ -353,7 +354,7 @@ export async function renderSettingsView(container, callbacks) {
       pullPreviewToggleBtn.textContent = isHidden ? "Hide Preview" : "Preview Changes";
       if (isHidden && !panel.dataset.loaded) {
         panel.dataset.loaded = "1";
-        await loadPullPreviewInto(panel, bookId);
+        await loadPullPreviewInto(panel, bookId, justPushed);
       }
     };
   }
@@ -953,11 +954,11 @@ function loadPushEntryDiffInto(diffEl, entry) {
  *  history, plus a warning on any target a pending local edit would turn into a conflict instead
  *  of a clean fast-forward. The "Pull Now" button lives outside this panel (see
  *  renderPullSection), same reasoning as the push preview above. */
-async function loadPullPreviewInto(panel, bookId) {
+async function loadPullPreviewInto(panel, bookId, justPushed = new Set()) {
   panel.innerHTML = `<div class="diff-loading">Loading&hellip;</div>`;
   let preview;
   try {
-    preview = await previewPull(bookId);
+    preview = await previewPull(bookId, justPushed);
   } catch (err) {
     panel.innerHTML = `<div class="diff-empty">Couldn't load remote changes: ${escapeHtml(err.message)}</div>`;
     return;
@@ -1234,7 +1235,7 @@ async function loadRestorePreviewInto(diffEl, bookId, commitSha, container, call
       });
       // Separate, not-nested call — pushes the restored state forward as new commits.
       const pushResult = await pushChanges({ force: true });
-      await renderSettingsView(container, callbacks);
+      await renderSettingsView(container, callbacks, { justPushed: pushResult.pushedTargets });
       const statusEl = document.getElementById("syncStatus");
       if (statusEl) {
         statusEl.textContent = pushResult.paused
