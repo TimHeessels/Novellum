@@ -84,6 +84,37 @@ const MARKDOWN_WRAP = {
   S: ["~~", "~~"], STRIKE: ["~~", "~~"], DEL: ["~~", "~~"],
 };
 
+/** Browsers leave the first line typed into an empty contenteditable (or text inserted via
+ *  execCommand("insertText")) as bare top-level text/inline nodes, not wrapped in a <p>/<div> —
+ *  unlike every other line, which gets wrapped when Enter splits an existing block. Bare nodes
+ *  render flush against .manuscript-text's own edge, without the text-indent that every other
+ *  paragraph gets, so wrap any such stray runs in a <p> to keep indentation consistent. */
+function wrapLooseTopLevelContent(container) {
+  const BLOCK_TAGS = new Set(["P", "DIV"]);
+  let node = container.firstChild;
+  while (node) {
+    if (node.nodeType === Node.ELEMENT_NODE && BLOCK_TAGS.has(node.tagName)) {
+      node = node.nextSibling;
+      continue;
+    }
+    const p = document.createElement("p");
+    let hasContent = false;
+    let cur = node;
+    while (cur && !(cur.nodeType === Node.ELEMENT_NODE && BLOCK_TAGS.has(cur.tagName))) {
+      const next = cur.nextSibling;
+      if (cur.nodeType === Node.ELEMENT_NODE || cur.textContent !== "") hasContent = true;
+      p.appendChild(cur);
+      cur = next;
+    }
+    if (hasContent) {
+      container.insertBefore(p, cur);
+      node = p.nextSibling;
+    } else {
+      node = cur;
+    }
+  }
+}
+
 export function sanitizeFormattingHtml(html) {
   const container = document.createElement("div");
   container.innerHTML = html || "";
@@ -99,6 +130,7 @@ export function sanitizeFormattingHtml(html) {
       clean(child);
     }
   })(container);
+  wrapLooseTopLevelContent(container);
   return container.innerHTML;
 }
 

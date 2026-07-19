@@ -89,7 +89,7 @@ export function buildManuscriptDocument(data) {
   .ms-chapter-heading{text-align:center;margin-bottom:48px}
   .ms-chapter-num{font-size:13px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#666}
   .ms-chapter-title{font-size:21px;font-weight:600;margin-top:6px}
-  .ms-scene p{margin:0 0 1em;text-align:justify;text-justify:inter-word}
+  .ms-scene p{margin:0 0 1em;text-align:justify;text-justify:inter-word;text-indent:1.5em}
   .ms-scene + .ms-scene{margin-top:2.75em}
   @media print{
     body{padding:0}
@@ -145,8 +145,8 @@ const EPUB_CSS = `body{font-family:Georgia,'Times New Roman',serif;line-height:1
 .chapter h1{text-align:center;margin:2.5em 0 2em}
 .chapter-num{display:block;font-size:.75em;letter-spacing:.12em;text-transform:uppercase;color:#555}
 .chapter-title{display:block;font-size:1.3em;margin-top:.3em}
-p{margin:0 0 1em;text-align:justify}
-p.scene-break{text-align:center;letter-spacing:.4em;margin:1.5em 0}`;
+p{margin:0 0 1em;text-align:justify;text-indent:1.5em}
+p.scene-break{text-align:center;letter-spacing:.4em;margin:1.5em 0;text-indent:0}`;
 
 function chapterFileName(index) {
   return `chapter-${index + 1}.xhtml`;

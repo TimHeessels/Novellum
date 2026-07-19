@@ -1076,7 +1076,16 @@ function bindManuscriptBlocks(root) {
     el.addEventListener("paste", (e) => {
       e.preventDefault();
       const text = (e.clipboardData || window.clipboardData).getData("text/plain");
-      document.execCommand("insertText", false, text);
+      // Insert line-by-line via insertParagraph rather than one insertText call with embedded
+      // "\n"s — insertText renders those as soft line breaks within a single block, which don't
+      // get the per-paragraph text-indent every other line in the editor gets. Runs of newlines
+      // collapse to one paragraph break (rather than splitting on every single "\n") because
+      // browsers vary in whether copying adjacent <p>s yields one or two "\n"s between them.
+      const lines = text.split(/(?:\r?\n)+/);
+      lines.forEach((line, i) => {
+        if (i > 0) document.execCommand("insertParagraph");
+        if (line) document.execCommand("insertText", false, line);
+      });
     });
     el.addEventListener("focus", () => {
       const { chapter: ch } = getSceneAndChapter(sc.id);
