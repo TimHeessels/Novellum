@@ -66,6 +66,7 @@ function chapterToHtml(ch) {
 
 export function buildManuscriptDocument(data) {
   const title = data.title || "Untitled Book";
+  const author = (data.author || "").trim();
   const chaptersHtml = data.chapters.map(chapterToHtml).join("\n");
 
   return `<!DOCTYPE html>
@@ -84,12 +85,13 @@ export function buildManuscriptDocument(data) {
   }
   .ms-title{max-width:640px;margin:0 auto 72px;text-align:center}
   .ms-title h1{font-size:28px;font-weight:600;margin:0;letter-spacing:.01em}
+  .ms-title .ms-author{font-size:15px;color:#666;margin-top:14px}
   .ms-chapter{max-width:640px;margin:0 auto}
   .ms-chapter + .ms-chapter{margin-top:96px}
   .ms-chapter-heading{text-align:center;margin-bottom:48px}
   .ms-chapter-num{font-size:13px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#666}
   .ms-chapter-title{font-size:21px;font-weight:600;margin-top:6px}
-  .ms-scene p{margin:0 0 1em;text-align:justify;text-justify:inter-word;text-indent:1.5em}
+  .ms-scene p{margin:0;text-indent:1.5em}
   .ms-scene + .ms-scene{margin-top:2.75em}
   @media print{
     body{padding:0}
@@ -111,7 +113,7 @@ export function buildManuscriptDocument(data) {
 </style>
 </head>
 <body>
-  <div class="ms-title"><h1>${escapeHtml(title)}</h1></div>
+  <div class="ms-title"><h1>${escapeHtml(title)}</h1>${author ? `<div class="ms-author">by ${escapeHtml(author)}</div>` : ""}</div>
   ${chaptersHtml}
   <script>window.addEventListener("load", () => window.print());</script>
 </body>
@@ -142,10 +144,11 @@ const CONTAINER_XML = `<?xml version="1.0" encoding="UTF-8"?>
 const EPUB_CSS = `body{font-family:Georgia,'Times New Roman',serif;line-height:1.6;margin:0;padding:0 6%}
 .titlepage{text-align:center;margin-top:45%}
 .titlepage h1{font-size:1.6em}
+.titlepage .author{font-size:1em;color:#555;margin-top:1em}
 .chapter h1{text-align:center;margin:2.5em 0 2em}
 .chapter-num{display:block;font-size:.75em;letter-spacing:.12em;text-transform:uppercase;color:#555}
 .chapter-title{display:block;font-size:1.3em;margin-top:.3em}
-p{margin:0 0 1em;text-align:justify;text-indent:1.5em}
+p{margin:0;text-indent:1.5em}
 p.scene-break{text-align:center;letter-spacing:.4em;margin:1.5em 0;text-indent:0}`;
 
 function chapterFileName(index) {
@@ -188,7 +191,7 @@ ${scenesHtml}
 </html>`;
 }
 
-function buildTitlepageXhtml(title) {
+function buildTitlepageXhtml(title, author) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
@@ -200,6 +203,7 @@ function buildTitlepageXhtml(title) {
 <body>
 <section class="titlepage">
 <h1>${escapeHtml(title)}</h1>
+${author ? `<p class="author">by ${escapeHtml(author)}</p>` : ""}
 </section>
 </body>
 </html>`;
@@ -248,7 +252,7 @@ ${navPoints}
 </ncx>`;
 }
 
-function buildContentOpf(title, uuid, chapters) {
+function buildContentOpf(title, author, uuid, chapters) {
   const chapterItems = chapters
     .map((ch, i) => `<item id="chapter${i + 1}" href="${chapterFileName(i)}" media-type="application/xhtml+xml"/>`)
     .join("\n");
@@ -260,6 +264,7 @@ function buildContentOpf(title, uuid, chapters) {
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
 <dc:identifier id="book-id">urn:uuid:${uuid}</dc:identifier>
 <dc:title>${escapeHtml(title)}</dc:title>
+${author ? `<dc:creator id="creator">${escapeHtml(author)}</dc:creator>` : ""}
 <dc:language>en</dc:language>
 <meta property="dcterms:modified">${modified}</meta>
 </metadata>
@@ -281,16 +286,17 @@ ${chapterSpine}
  *  Blob, ready to download or hand to an e-reader. */
 export function buildEpubBlob(data) {
   const title = data.title || "Untitled Book";
+  const author = (data.author || "").trim();
   const uuid = epubUuid();
 
   const entries = [
     { name: "mimetype", data: "application/epub+zip" },
     { name: "META-INF/container.xml", data: CONTAINER_XML },
-    { name: "OEBPS/content.opf", data: buildContentOpf(title, uuid, data.chapters) },
+    { name: "OEBPS/content.opf", data: buildContentOpf(title, author, uuid, data.chapters) },
     { name: "OEBPS/nav.xhtml", data: buildNavXhtml(title, data.chapters) },
     { name: "OEBPS/toc.ncx", data: buildNcx(title, uuid, data.chapters) },
     { name: "OEBPS/styles.css", data: EPUB_CSS },
-    { name: "OEBPS/titlepage.xhtml", data: buildTitlepageXhtml(title) },
+    { name: "OEBPS/titlepage.xhtml", data: buildTitlepageXhtml(title, author) },
     ...data.chapters.map((ch, i) => ({ name: `OEBPS/${chapterFileName(i)}`, data: chapterToXhtml(ch) })),
   ];
 

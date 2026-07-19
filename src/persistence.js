@@ -32,6 +32,7 @@ export async function loadBook(bookId) {
     dbGetAllByIndex("bibleEntries", "bookId", bookId),
   ]);
   data.title = bookRow ? bookRow.title : "Untitled Book";
+  data.author = bookRow ? bookRow.author || "" : "";
   hydrateDataFromRows({ chapters, scenes, bibleEntries });
 }
 
@@ -69,7 +70,7 @@ async function flattenDataToRows(bookId) {
     dbGet("books", bookId),
     dbGetAllByIndex("scenes", "bookId", bookId),
   ]);
-  const bookRow = { id: bookId, title: data.title, createdAt: existing?.createdAt || now, updatedAt: now };
+  const bookRow = { id: bookId, title: data.title, author: data.author || "", createdAt: existing?.createdAt || now, updatedAt: now };
 
   const existingSceneById = new Map(existingScenes.map((s) => [s.id, s]));
 
@@ -197,6 +198,7 @@ export function exportDataAsJson() {
   return JSON.stringify(
     {
       title: data.title,
+      author: data.author,
       chapters: data.chapters,
       characters: data.characters,
       locations: data.locations,
@@ -213,6 +215,7 @@ export function importDataFromJson(jsonString) {
     throw new Error("Invalid Novellum export file.");
   }
   data.title = parsed.title || data.title;
+  data.author = parsed.author || "";
   data.chapters = parsed.chapters;
   data.characters = parsed.characters || [];
   data.locations = parsed.locations || [];

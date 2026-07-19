@@ -207,6 +207,7 @@ export function chapter(title, scenes) {
 // any new book a user creates (ui.js handleCreateBook) — one empty chapter/scene, no content.
 export const data = {
   title: "Untitled Book",
+  author: "",
   chapters: [chapter("Chapter 1", [scene("Untitled Scene", "", "", [])])],
   characters: [],
   locations: [],

@@ -656,6 +656,9 @@ function summarizeManifest(remoteRaw, localRaw) {
   if (mine.title !== theirs.title) {
     fields.push({ label: "Book title", html: wordDiffHtml(theirs.title, mine.title) });
   }
+  if ((mine.author || "") !== (theirs.author || "")) {
+    fields.push({ label: "Author", html: wordDiffHtml(theirs.author || "", mine.author || "") });
+  }
 
   const theirsCh = theirs.chapters || [];
   const mineCh = mine.chapters || [];

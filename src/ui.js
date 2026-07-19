@@ -798,6 +798,7 @@ async function handleCreateBook() {
   await flushSaveNow();
   const bookId = uid("book");
   data.title = title;
+  data.author = "";
   data.chapters = [chapter("Chapter 1", [scene("Untitled Scene", "", "", [])])];
   data.characters = [];
   data.locations = [];
@@ -817,10 +818,12 @@ async function handleCreateBook() {
   focusSceneText(data.chapters[0].scenes[0].id);
 }
 
-function handleRenameBook(newTitle) {
+function handleSaveBookDetails(newTitle, newAuthor) {
   const title = (newTitle || "").trim() || "Untitled Book";
-  if (title === data.title) return;
+  const author = (newAuthor || "").trim();
+  if (title === data.title && author === (data.author || "")) return;
   data.title = title;
+  data.author = author;
   scheduleSave();
   markDirty("manifest", getActiveBookId());
   state.books = state.books.map((b) => (b.id === state.activeBookId ? { ...b, title } : b));
@@ -837,6 +840,7 @@ async function handleDeleteBook(bookId) {
   if (remainingBooks.length === 0) {
     const newBookId = uid("book");
     data.title = "Untitled Book";
+    data.author = "";
     data.chapters = [chapter("Chapter 1", [scene("Untitled Scene", "", "", [])])];
     data.characters = [];
     data.locations = [];
@@ -947,6 +951,11 @@ function renderLeftPanel() {
           <div class="section-label">Book Details</div>
           <div class="settings-actions-row">
             <input type="text" id="bookTitleInput" placeholder="Untitled Book" style="flex:1;min-width:160px;margin-top:0" value="${escapeHtml(data.title || "")}">
+          </div>
+          <div class="settings-actions-row" style="margin-top:8px">
+            <input type="text" id="bookAuthorInput" placeholder="Author name" style="flex:1;min-width:160px;margin-top:0" value="${escapeHtml(data.author || "")}">
+          </div>
+          <div class="settings-actions-row" style="margin-top:8px">
             <button class="modal-btn done" id="bookTitleSave">Save</button>
           </div>
           <div id="bookTitleStatus" class="settings-status"></div>
@@ -1025,7 +1034,10 @@ function renderLeftPanel() {
   const bookTitleSaveBtn = document.getElementById("bookTitleSave");
   if (bookTitleSaveBtn) {
     bookTitleSaveBtn.onclick = () => {
-      handleRenameBook(document.getElementById("bookTitleInput").value);
+      handleSaveBookDetails(
+        document.getElementById("bookTitleInput").value,
+        document.getElementById("bookAuthorInput").value
+      );
       const status = document.getElementById("bookTitleStatus");
       if (status) status.textContent = "Saved.";
     };

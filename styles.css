@@ -365,8 +365,7 @@ button{font-family:inherit}
   font:400 18px/1.85 'Lora',serif;max-width:660px;color:oklch(0.89 0.008 75);
   outline:none;white-space:normal;cursor:text;border-radius:6px;margin:-6px auto;padding:6px;
 }
-.manuscript-text p,.manuscript-text div{margin:0 0 0.55em;text-indent:1.5em}
-.manuscript-text p:last-child,.manuscript-text div:last-child{margin-bottom:0}
+.manuscript-text p,.manuscript-text div{margin:0;text-indent:1.5em}
 .manuscript-text.is-empty::before{content:attr(data-placeholder);color:var(--text-muted);pointer-events:none}
 .scene-block{margin-bottom:30px}
 .chapter-group{margin-bottom:46px}

@@ -295,6 +295,7 @@ function buildManifest(bookRow, chapters, scenes) {
     schemaVersion: 1,
     id: bookRow.id,
     title: bookRow.title,
+    author: bookRow.author || "",
     chapters: sorted.map((ch) => ({
       id: ch.id,
       title: ch.title,
@@ -487,12 +488,21 @@ async function applyRemoteManifest(bookId, remoteManifest, remoteByPath, token, 
   const localScenes = await dbGetAllByIndex("scenes", "bookId", bookId);
   const localScenesById = new Map(localScenes.map((s) => [s.id, s]));
 
-  // The manifest is also the only place a book's title travels between devices — push
-  // (buildManifest) has always included it, but this adoption path used to only ever touch
-  // chapters/scenes, so a title changed elsewhere never made it back down here.
+  // The manifest is also the only place a book's title/author travels between devices — push
+  // (buildManifest) has always included them, but this adoption path used to only ever touch
+  // chapters/scenes, so a title/author changed elsewhere never made it back down here.
   const bookRow = await dbGet("books", bookId);
-  if (bookRow && remoteManifest.title && bookRow.title !== remoteManifest.title) {
-    await dbPut("books", { ...bookRow, title: remoteManifest.title, updatedAt: now });
+  if (bookRow) {
+    const titleChanged = remoteManifest.title && bookRow.title !== remoteManifest.title;
+    const authorChanged = remoteManifest.author !== undefined && (bookRow.author || "") !== remoteManifest.author;
+    if (titleChanged || authorChanged) {
+      await dbPut("books", {
+        ...bookRow,
+        title: titleChanged ? remoteManifest.title : bookRow.title,
+        author: authorChanged ? remoteManifest.author : bookRow.author,
+        updatedAt: now,
+      });
+    }
   }
 
   const newChapterRows = [];
@@ -1033,8 +1043,17 @@ export async function restoreToCommit(bookId, commitSha) {
   await applyRemoteBible(bookId, bible);
 
   const bookRow = await dbGet("books", bookId);
-  if (bookRow && manifest.title && bookRow.title !== manifest.title) {
-    await dbPut("books", { ...bookRow, title: manifest.title, updatedAt: now });
+  if (bookRow) {
+    const titleChanged = manifest.title && bookRow.title !== manifest.title;
+    const authorChanged = manifest.author !== undefined && (bookRow.author || "") !== manifest.author;
+    if (titleChanged || authorChanged) {
+      await dbPut("books", {
+        ...bookRow,
+        title: titleChanged ? manifest.title : bookRow.title,
+        author: authorChanged ? manifest.author : bookRow.author,
+        updatedAt: now,
+      });
+    }
   }
 
   await enqueueSync("manifest", bookId, bookId);
