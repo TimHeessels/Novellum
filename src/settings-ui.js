@@ -6,7 +6,7 @@ import {
   listOutbox, listConflicts, pushChanges, pullChanges, resolveConflictKeepMine, resolveConflictUseTheirs,
   getLocalContentForConflict, connectToRepo, isUsableVaultRepo, resolveAllConflicts, withSyncLock,
   listBookHistory, isBookClean, previewRestore, restoreToCommit,
-  previewPush, previewPull, checkRemoteChanges,
+  previewPush, previewPull, checkRemoteChanges, setOutboxEntrySkipped,
 } from "./sync-engine.js";
 import { getActiveBookId, exportDataAsJson, importDataFromJson } from "./persistence.js";
 import { diffLines, diffWords } from "./diff.js";
@@ -42,7 +42,7 @@ export async function renderSettingsView(container, callbacks, { justPushed = ne
     <div class="settings-view">
       ${isConnected ? `
         ${conflicts.length > 0 ? renderConflictsSection(conflicts) : ""}
-        ${outbox.length > 0 ? renderPushSection(outbox.length) : ""}
+        ${outbox.length > 0 ? renderPushSection(outbox) : ""}
         ${remoteChangeCount > 0 ? renderPullSection(remoteChangeCount) : ""}
         <div id="syncStatus" class="settings-status"></div>
       ` : ""}
@@ -63,7 +63,7 @@ export async function renderSettingsView(container, callbacks, { justPushed = ne
           <div class="section-label">Sync stats</div>
           <div>Last pushed: ${settings.lastPushedAt ? formatRelativeTime(settings.lastPushedAt) : "Never"}</div>
           <div>Last pulled: ${settings.lastPulledAt ? formatRelativeTime(settings.lastPulledAt) : "Never"}</div>
-          <div>Pending changes: ${outbox.length}</div>
+          <div id="pendingChangesStat">Pending changes: ${outbox.length}${outbox.some((e) => e.skipped) ? ` (${outbox.filter((e) => e.skipped).length} ignored)` : ""}</div>
         </div>
 
         <div class="settings-section">
@@ -526,16 +526,21 @@ function rawContentTitle(kind, raw) {
   return "Scene";
 }
 
-function renderPushSection(count) {
+function renderPushSection(outbox) {
+  const activeCount = outbox.filter((e) => !e.skipped).length;
+  const ignoredCount = outbox.length - activeCount;
   return `
     <div class="settings-section">
-      <div class="section-label">Push (${count} pending)</div>
+      <div class="section-label" id="pushSectionLabel">Push (${activeCount} pending)</div>
       <div class="settings-status" style="margin:0 0 8px">
         What pushing right now would send to GitHub, across every book.
       </div>
+      <div class="settings-status" id="pushIgnoredNote" style="margin:0 0 8px${ignoredCount > 0 ? "" : ";display:none"}">
+        ${ignoredCount} change${ignoredCount === 1 ? "" : "s"} marked "Ignore" below — won't be sent until you include ${ignoredCount === 1 ? "it" : "them"} again.
+      </div>
       <div class="settings-actions-row">
         <button class="tbtn" id="pushPreviewToggle">Preview Changes</button>
-        <button class="modal-btn done" id="pushNowBtn">Push Now</button>
+        <button class="modal-btn done" id="pushNowBtn"${activeCount === 0 ? " disabled" : ""}>Push Now</button>
       </div>
       <div id="pushPreviewPanel" style="display:none;margin-top:10px"></div>
     </div>
@@ -713,9 +718,10 @@ function summarizeBible(remoteRaw, localRaw) {
 
     const added = mineList.filter((x) => !theirsById.has(x.id));
     const removed = theirsList.filter((x) => !mineById.has(x.id));
+    const entriesEqual = (a, b) => JSON.stringify(a || []) === JSON.stringify(b || []);
     const changed = mineList.filter((x) => {
       const t = theirsById.get(x.id);
-      return t && (t.name !== x.name || t.desc !== x.desc);
+      return t && (t.name !== x.name || !entriesEqual(t.entries, x.entries));
     });
     if (!added.length && !removed.length && !changed.length) continue;
 
@@ -723,7 +729,7 @@ function summarizeBible(remoteRaw, localRaw) {
       .map((x) => {
         const t = theirsById.get(x.id);
         const nameHtml = wordDiffHtml(t.name, x.name);
-        const descHtml = t.desc !== x.desc ? `<div class="conflict-subline">${wordDiffHtml(t.desc, x.desc)}</div>` : "";
+        const descHtml = !entriesEqual(t.entries, x.entries) ? `<div class="conflict-subline">Details changed</div>` : "";
         return `<div class="conflict-list-line"><strong>${nameHtml}</strong>${descHtml}</div>`;
       })
       .join("");
@@ -841,10 +847,37 @@ const PUSH_CHANGE_LABEL = {
   update: "Changed since last push",
 };
 
+/** Re-derives the push section's header (pending count, ignored note, Push Now enabled state) and
+ *  the "Pending changes" stats line from the current outbox — called after an Ignore/Include
+ *  toggle so those stay in sync without collapsing the (possibly expanded) preview panel via a
+ *  full renderSettingsView re-render. No-ops for any element that isn't on the page (e.g. the
+ *  stats line only exists while connected, which is always true here, but this stays defensive). */
+async function refreshPushHeader() {
+  const outbox = await listOutbox();
+  const activeCount = outbox.filter((e) => !e.skipped).length;
+  const ignoredCount = outbox.length - activeCount;
+
+  const label = document.getElementById("pushSectionLabel");
+  if (label) label.textContent = `Push (${activeCount} pending)`;
+
+  const note = document.getElementById("pushIgnoredNote");
+  if (note) {
+    note.style.display = ignoredCount > 0 ? "" : "none";
+    note.textContent = `${ignoredCount} change${ignoredCount === 1 ? "" : "s"} marked "Ignore" below — won't be sent until you include ${ignoredCount === 1 ? "it" : "them"} again.`;
+  }
+
+  const pushNowBtn = document.getElementById("pushNowBtn");
+  if (pushNowBtn) pushNowBtn.disabled = activeCount === 0;
+
+  const stat = document.getElementById("pendingChangesStat");
+  if (stat) stat.textContent = `Pending changes: ${outbox.length}${ignoredCount > 0 ? ` (${ignoredCount} ignored)` : ""}`;
+}
+
 /** Lazily loads and renders what pushing right now would actually send — one row per outbox
  *  entry (across every book, matching pushChanges's own scope), each with its own "View Changes"
- *  toggle. The "Push Now" button itself lives outside this panel (see renderPushSection) so it
- *  works whether or not the preview has been expanded. */
+ *  toggle plus an "Ignore"/"Include in Push" toggle (setOutboxEntrySkipped) for entries with
+ *  actual content to send. The "Push Now" button itself lives outside this panel (see
+ *  renderPushSection) so it works whether or not the preview has been expanded. */
 async function loadPushPreviewInto(panel) {
   panel.innerHTML = `<div class="diff-loading">Loading&hellip;</div>`;
   const { entries } = await previewPush();
@@ -860,16 +893,22 @@ async function loadPushPreviewInto(panel) {
   const rowsHtml = entries
     .map((e) => {
       const showToggle = e.changeType !== "noop";
+      const statusText = e.skipped
+        ? `Ignored — won't be sent with this push`
+        : `${PUSH_CHANGE_LABEL[e.changeType]}`;
       return `
-    <div class="conflict-row">
+    <div class="conflict-row"${e.skipped ? ' style="opacity:0.6"' : ""}>
       <div class="conflict-row-head">
         <div>
           ${escapeHtml(rawContentTitle(e.kind, e.localRaw || e.remoteRaw))}
           <div class="settings-status" style="margin:2px 0 0">
-            ${escapeHtml(PUSH_CHANGE_LABEL[e.changeType])}${multiBook ? ` &middot; ${escapeHtml(bookTitle(e.bookId))}` : ""}
+            ${escapeHtml(statusText)}${multiBook ? ` &middot; ${escapeHtml(bookTitle(e.bookId))}` : ""}
           </div>
         </div>
-        ${showToggle ? `<div class="conflict-actions"><button class="tbtn" id="pushEntryToggle-${e.key}">View Changes</button></div>` : ""}
+        <div class="conflict-actions">
+          ${showToggle ? `<button class="tbtn" id="pushEntryToggle-${e.key}">View Changes</button>` : ""}
+          ${showToggle ? `<button class="tbtn" id="pushEntrySkip-${e.key}">${e.skipped ? "Include in Push" : "Ignore"}</button>` : ""}
+        </div>
       </div>
       ${showToggle ? `<div class="conflict-diff" id="pushEntryDiff-${e.key}" style="display:none"></div>` : ""}
     </div>`;
@@ -880,17 +919,26 @@ async function loadPushPreviewInto(panel) {
 
   entries.forEach((e) => {
     const toggleBtn = document.getElementById(`pushEntryToggle-${e.key}`);
-    if (!toggleBtn) return;
-    toggleBtn.onclick = () => {
-      const diffEl = document.getElementById(`pushEntryDiff-${e.key}`);
-      const isHidden = diffEl.style.display === "none";
-      diffEl.style.display = isHidden ? "block" : "none";
-      toggleBtn.textContent = isHidden ? "Hide Changes" : "View Changes";
-      if (isHidden && !diffEl.dataset.loaded) {
-        diffEl.dataset.loaded = "1";
-        loadPushEntryDiffInto(diffEl, e);
-      }
-    };
+    if (toggleBtn) {
+      toggleBtn.onclick = () => {
+        const diffEl = document.getElementById(`pushEntryDiff-${e.key}`);
+        const isHidden = diffEl.style.display === "none";
+        diffEl.style.display = isHidden ? "block" : "none";
+        toggleBtn.textContent = isHidden ? "Hide Changes" : "View Changes";
+        if (isHidden && !diffEl.dataset.loaded) {
+          diffEl.dataset.loaded = "1";
+          loadPushEntryDiffInto(diffEl, e);
+        }
+      };
+    }
+    const skipBtn = document.getElementById(`pushEntrySkip-${e.key}`);
+    if (skipBtn) {
+      skipBtn.onclick = async () => {
+        skipBtn.disabled = true;
+        await setOutboxEntrySkipped(e.key, !e.skipped);
+        await Promise.all([loadPushPreviewInto(panel), refreshPushHeader()]);
+      };
+    }
   });
 }
 
@@ -1001,10 +1049,43 @@ async function loadPullPreviewInto(panel, bookId, justPushed = new Set()) {
     bibleBlockHtml = (preview.bibleDirty ? dirtyNote("the story bible") : "") + fields.map(fieldHtml).join("");
   }
 
-  if (!manifestBlockHtml && !bibleBlockHtml && preview.changedScenes.length === 0) {
+  const addedScenes = preview.addedScenes || [];
+  const removedScenes = preview.removedScenes || [];
+
+  if (!manifestBlockHtml && !bibleBlockHtml && addedScenes.length === 0 && removedScenes.length === 0 && preview.changedScenes.length === 0) {
     panel.innerHTML = `<div class="conflict-nochange">No differences — pulling wouldn't change anything.</div>`;
     return;
   }
+
+  const addedRowsHtml = addedScenes
+    .map(
+      (sc) => `
+    <div class="conflict-row">
+      <div class="conflict-row-head">
+        <div>
+          ${escapeHtml(sc.title)}
+          <div class="settings-status" style="margin:2px 0 0">New on GitHub — not in your local copy yet, would be added</div>
+        </div>
+        <div class="conflict-actions"><button class="tbtn" id="pullPreviewAddedToggle-${sc.id}">View Content</button></div>
+      </div>
+      <div class="conflict-diff" id="pullPreviewAddedDiff-${sc.id}" style="display:none"></div>
+    </div>`
+    )
+    .join("");
+
+  const removedRowsHtml = removedScenes
+    .map(
+      (sc) => `
+    <div class="conflict-row">
+      <div class="conflict-row-head">
+        <div>
+          ${escapeHtml(sc.title)}
+          <div class="settings-status" style="margin:2px 0 0">No longer in any chapter on GitHub — would disappear from your manuscript view (content stays safely stored)</div>
+        </div>
+      </div>
+    </div>`
+    )
+    .join("");
 
   const sceneRowsHtml = preview.changedScenes
     .map((sc) => {
@@ -1016,14 +1097,15 @@ async function loadPullPreviewInto(panel, bookId, justPushed = new Set()) {
       }
       const status = sc.dirty
         ? "You have unpushed changes here — pulling would create a conflict instead of applying automatically."
-        : null;
+        : "Edited";
+      const statusClass = sc.dirty ? "error" : "";
       const sceneFieldsHtml = sceneFields.map(fieldHtml).join("");
       return `
     <div class="conflict-row">
       <div class="conflict-row-head">
         <div>
           ${escapeHtml(sc.title)}
-          ${status ? `<div class="settings-status error" style="margin:2px 0 0">${status}</div>` : ""}
+          <div class="settings-status ${statusClass}" style="margin:2px 0 0">${status}</div>
         </div>
         ${sceneFieldsHtml ? `<div class="conflict-actions"><button class="tbtn" id="pullPreviewSceneToggle-${sc.id}">View Changes</button></div>` : ""}
       </div>
@@ -1039,8 +1121,25 @@ async function loadPullPreviewInto(panel, bookId, justPushed = new Set()) {
     </div>
     ${manifestBlockHtml}
     ${bibleBlockHtml}
-    ${preview.changedScenes.length ? `<div class="conflict-field-label" style="margin-top:14px">Scenes (${preview.changedScenes.length})</div>${sceneRowsHtml}` : ""}
+    ${addedScenes.length ? `<div class="conflict-field-label" style="margin-top:14px">Scenes added (${addedScenes.length})</div>${addedRowsHtml}` : ""}
+    ${preview.changedScenes.length ? `<div class="conflict-field-label" style="margin-top:14px">Scenes edited (${preview.changedScenes.length})</div>${sceneRowsHtml}` : ""}
+    ${removedScenes.length ? `<div class="conflict-field-label" style="margin-top:14px">Scenes removed (${removedScenes.length})</div>${removedRowsHtml}` : ""}
   `;
+
+  addedScenes.forEach((sc) => {
+    const toggleBtn = document.getElementById(`pullPreviewAddedToggle-${sc.id}`);
+    if (!toggleBtn) return;
+    toggleBtn.onclick = () => {
+      const diffEl = document.getElementById(`pullPreviewAddedDiff-${sc.id}`);
+      const isHidden = diffEl.style.display === "none";
+      diffEl.style.display = isHidden ? "block" : "none";
+      toggleBtn.textContent = isHidden ? "Hide Content" : "View Content";
+      if (isHidden && !diffEl.dataset.loaded) {
+        diffEl.dataset.loaded = "1";
+        loadDiffInto(diffEl, { remoteContent: "" }, sc.remoteRaw || "", "+ New scene from GitHub");
+      }
+    };
+  });
 
   preview.changedScenes.forEach((sc) => {
     const toggleBtn = document.getElementById(`pullPreviewSceneToggle-${sc.id}`);

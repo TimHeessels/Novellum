@@ -1,7 +1,7 @@
 "use strict";
 
 import { dbGet, dbGetAllByIndex, dbGetAll, dbPut, dbReplaceWhereIndex, dbDelete } from "./db.js";
-import { data, getSceneAndChapter } from "./model.js";
+import { data, getSceneAndChapter, entriesFromLegacy } from "./model.js";
 
 export const DEFAULT_BOOK_ID = "book-default";
 
@@ -37,7 +37,7 @@ export async function loadBook(bookId) {
 }
 
 function hydrateBibleFromRows(bibleEntries) {
-  const toBibleItem = (row) => ({ id: row.id, name: row.name, desc: row.desc });
+  const toBibleItem = (row) => ({ id: row.id, name: row.name, entries: entriesFromLegacy(row) });
   const byKind = (kind) =>
     bibleEntries.filter((b) => b.kind === kind).sort((a, b) => a.order - b.order).map(toBibleItem);
 
@@ -214,11 +214,12 @@ export function importDataFromJson(jsonString) {
   if (!parsed || !Array.isArray(parsed.chapters)) {
     throw new Error("Invalid Novellum export file.");
   }
+  const toBibleItem = (item) => ({ id: item.id, name: item.name, entries: entriesFromLegacy(item) });
   data.title = parsed.title || data.title;
   data.author = parsed.author || "";
   data.chapters = parsed.chapters;
-  data.characters = parsed.characters || [];
-  data.locations = parsed.locations || [];
-  data.concepts = parsed.concepts || [];
+  data.characters = (parsed.characters || []).map(toBibleItem);
+  data.locations = (parsed.locations || []).map(toBibleItem);
+  data.concepts = (parsed.concepts || []).map(toBibleItem);
   return persistNow();
 }

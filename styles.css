@@ -190,7 +190,7 @@ button{font-family:inherit}
 
 .overview-view{max-width:1400px;margin:0 auto;padding:12px 0 60px}
 .overview-header{
-  display:flex;justify-content:space-between;align-items:center;
+  display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;row-gap:10px;
   position:sticky;top:-45px;z-index:2;background:var(--bg);
   margin:0 -60px 26px;padding:12px 60px;
 }
@@ -216,6 +216,21 @@ button{font-family:inherit}
 .toggle-switch.on{background:var(--accent);border-color:var(--accent)}
 .toggle-switch.on .toggle-knob{transform:translateX(12px)}
 
+.overview-chart-panel{border:1px solid var(--card-border);border-radius:10px;padding:18px 22px;margin:0 0 32px}
+.overview-chart-eyebrow{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:14px}
+.overview-chart-body{display:flex;align-items:stretch;gap:14px}
+.overview-chart-axis{flex:none;width:52px;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;height:64px;font-size:11px;color:var(--text-mutedmore);font-variant-numeric:tabular-nums}
+.overview-chart-track{flex:1;display:flex;flex-direction:column;min-width:0}
+.overview-chart-bars{display:flex;align-items:flex-end;gap:6px;height:64px}
+.overview-chart-bar{flex:1;min-width:0;border-radius:3px 3px 0 0;background:var(--card-border-hover);transition:background .15s}
+.overview-chart-bar.has-todos{background:var(--accent)}
+.overview-chart-groups{display:flex;align-items:stretch;gap:14px;height:64px}
+.overview-chart-group{display:flex;align-items:flex-end;gap:3px;min-width:0;flex-shrink:1;flex-basis:0}
+.overview-chart-labels{display:flex;gap:6px;margin-top:6px}
+.overview-chart-labels span{flex:1;min-width:0;text-align:center;font-size:10px;color:var(--text-mutedmore);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.overview-chart-label-groups{height:auto;margin-top:6px}
+.overview-chart-label-groups span{flex:1;min-width:0;text-align:center;font-size:9px;color:var(--text-mutedmore);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
 .overview-chapters{display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));column-gap:24px;row-gap:48px;align-items:start}
 .overview-chapters.chapters-only{grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));row-gap:16px}
 .overview-chapters.highlight-todos .overview-scene-card:not(.has-todos){opacity:.55}
@@ -225,13 +240,16 @@ button{font-family:inherit}
 .overview-chapters.highlight-todos .overview-chapter-card:not(.has-todos){opacity:.55}
 .overview-chapters.highlight-todos .overview-chapter-card.has-todos{border-color:oklch(0.42 0.01 75)}
 .overview-chapter{min-width:0}
+.overview-chapter-section-card{
+  border:1px solid var(--card-border);border-radius:10px;padding:20px 22px;
+}
 
 .overview-chapter-card{
-  border:1px solid var(--card-border);border-radius:8px;padding:14px 16px;cursor:pointer;
+  position:relative;border:1px solid var(--card-border);border-radius:8px;padding:14px 16px;cursor:pointer;
   transition:background .15s,border-color .15s;
 }
 .overview-chapter-card:hover{background:var(--hover-bg);border-color:var(--card-border-hover)}
-.overview-chapter-card-title{font:700 15px 'Lora',serif;color:var(--text-strong)}
+.overview-chapter-card-title{font:700 15px 'Lora',serif;color:var(--text-strong);padding-right:60px}
 .overview-chapter-card .overview-chapter-status{margin:6px 0 0}
 .overview-chapter-title{
   font:700 17px 'Lora',serif;color:var(--text-strong);cursor:pointer;border-radius:6px;
@@ -246,9 +264,14 @@ button{font-family:inherit}
   transition:background .15s,border-color .15s;
 }
 .overview-scene-card:hover{background:var(--hover-bg);border-color:var(--card-border-hover)}
-.overview-scene-title{font:600 13px 'Lora',serif;color:var(--text-strong);margin-bottom:6px;padding-right:50px}
+.overview-scene-title{font:600 13px 'Lora',serif;color:var(--text-strong);margin-bottom:6px;padding-right:60px}
+.overview-scene-wordcount{font-size:11.5px;font-weight:600;color:var(--text-muted);margin:0 0 6px}
 .overview-scene-summary{font-size:12.5px;line-height:1.6;color:var(--text-dim);margin-bottom:8px}
-.overview-scene-wordcount{position:absolute;top:12px;right:14px;font-size:11px;font-weight:600;color:var(--text-muted)}
+.overview-todo-count-chip{
+  position:absolute;top:12px;right:14px;font-size:11px;font-weight:600;padding:3px 8px;border-radius:20px;
+  white-space:nowrap;background:oklch(0.72 0.13 68 / .13);color:var(--accent-hover);
+  border:1px solid oklch(0.72 0.13 68 / .3);
+}
 
 .overview-todo-list{display:flex;flex-direction:column;gap:1px;margin-top:2px}
 .overview-todo-row{pointer-events:none;padding:3px 0}
@@ -434,6 +457,7 @@ button{font-family:inherit}
   width:380px;background:var(--modal-bg);border:1px solid var(--modal-border);border-radius:10px;
   padding:24px;box-shadow:0 24px 60px rgba(0,0,0,.5);
 }
+.modal.modal-bible{width:640px;max-height:82vh;overflow-y:auto}
 .modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
 .modal-title{font:600 15px 'Lora',serif;color:var(--text-strong)}
 .modal-close{background:transparent;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;width:24px;height:24px}
@@ -448,6 +472,24 @@ button{font-family:inherit}
   color:oklch(0.85 0.008 75);font:400 13px 'Manrope';line-height:1.6;padding:9px 10px;
   min-height:120px;resize:vertical;margin-bottom:22px;
 }
+.bible-entries{display:flex;flex-direction:column;gap:12px;margin-bottom:14px}
+.bible-entry-row{border:1px solid var(--card-border);border-radius:7px;padding:10px}
+.bible-entry-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.bible-entry-title{
+  flex:1;background:var(--input-bg);border:1px solid var(--modal-border);border-radius:6px;
+  color:var(--text-strong);font:600 13px 'Lora',serif;padding:7px 9px;margin-bottom:0;
+}
+.bible-entry-text{
+  width:100%;background:var(--input-bg);border:1px solid var(--modal-border);border-radius:6px;
+  color:oklch(0.85 0.008 75);font:400 13px 'Manrope';line-height:1.6;padding:9px 10px;
+  min-height:70px;resize:vertical;margin-bottom:0;
+}
+.bible-entry-del{
+  flex:none;background:transparent;border:none;cursor:pointer;color:oklch(0.45 0.01 75);
+  font-size:15px;opacity:.5;padding:2px 4px;
+}
+.bible-entry-del:hover{opacity:1;color:var(--danger-text)}
+
 .modal-copy{font-size:12.5px;line-height:1.6;color:var(--text-dim);margin:0 0 20px}
 .modal-actions{display:flex;gap:10px}
 .modal-btn{

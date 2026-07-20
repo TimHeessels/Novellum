@@ -479,7 +479,10 @@ function deleteScene(sceneId) {
 }
 
 function openBibleModal(kind, id) {
-  state.bibleEdit = { kind, id: id || null };
+  const arr = bibleArrayFor(kind);
+  const item = id ? arr.find((x) => x.id === id) : null;
+  const entries = item ? item.entries.map((e) => ({ ...e })) : [];
+  state.bibleEdit = { kind, id: id || null, name: item ? item.name : "", entries };
   renderModal();
 }
 
@@ -488,18 +491,50 @@ function closeBibleModal() {
   renderModal();
 }
 
-function saveBibleModal() {
-  const { kind, id } = state.bibleEdit;
+// Reads the modal's current DOM values back into state.bibleEdit. Called before any action that
+// re-renders the modal (add/remove entry) so in-progress typing in other rows isn't lost.
+function syncBibleDraftFromDom() {
+  if (!state.bibleEdit) return;
   const nameEl = document.getElementById("bibleEditName");
-  const descEl = document.getElementById("bibleEditDesc");
-  const name = (nameEl.value || "Untitled").trim();
-  const desc = (descEl.value || "").trim();
+  if (nameEl) state.bibleEdit.name = nameEl.value;
+  const rows = document.querySelectorAll(".bible-entry-row");
+  state.bibleEdit.entries = Array.from(rows).map((row) => ({
+    id: row.dataset.entryId,
+    title: row.querySelector(".bible-entry-title").value,
+    text: row.querySelector(".bible-entry-text").value,
+  }));
+}
+
+function addBibleEntry() {
+  syncBibleDraftFromDom();
+  state.bibleEdit.entries.push({ id: uid("entry"), title: "", text: "" });
+  renderModal();
+  requestAnimationFrame(() => {
+    const titles = document.querySelectorAll(".bible-entry-title");
+    const last = titles[titles.length - 1];
+    if (last) last.focus();
+  });
+}
+
+function removeBibleEntry(entryId) {
+  syncBibleDraftFromDom();
+  state.bibleEdit.entries = state.bibleEdit.entries.filter((e) => e.id !== entryId);
+  renderModal();
+}
+
+function saveBibleModal() {
+  syncBibleDraftFromDom();
+  const { kind, id, entries } = state.bibleEdit;
+  const name = (state.bibleEdit.name || "Untitled").trim();
+  const cleanEntries = entries
+    .map((e) => ({ id: e.id, title: (e.title || "").trim(), text: (e.text || "").trim() }))
+    .filter((e) => e.title || e.text);
   const arr = bibleArrayFor(kind);
   if (id) {
     const item = arr.find((x) => x.id === id);
-    if (item) { item.name = name; item.desc = desc; }
+    if (item) { item.name = name; item.entries = cleanEntries; }
   } else {
-    arr.push({ id: uid(kind), name, desc });
+    arr.push({ id: uid(kind), name, entries: cleanEntries });
   }
   scheduleSave();
   markDirty("bible", getActiveBookId());
@@ -640,8 +675,8 @@ async function refreshSyncStatusUI() {
     if (!status.configured) label = "Sync not set up";
     else if (status.conflictCount > 0) label = `${status.conflictCount} conflict${status.conflictCount > 1 ? "s" : ""}`;
     else if (state.syncPauseReason) label = "Sync error";
-    else if (status.pendingCount > 0) label = `Push ${status.pendingCount} change${status.pendingCount > 1 ? "s" : ""}`;
-    else if (state.remoteChangeCount > 0) label = `Pull ${state.remoteChangeCount} change${state.remoteChangeCount > 1 ? "s" : ""}`;
+    else if (status.pendingCount > 0) label = `${status.pendingCount} change${status.pendingCount > 1 ? "s" : ""}`;
+    else if (state.remoteChangeCount > 0) label = `${state.remoteChangeCount} change${state.remoteChangeCount > 1 ? "s" : ""}`;
     else {
       const lastAt = [status.lastPushedAt, status.lastPulledAt].filter(Boolean).sort().pop();
       label = lastAt ? `Synced ${formatRelativeTime(lastAt)}` : "Not synced yet";
@@ -927,14 +962,15 @@ function renderLeftPanel() {
     const kind = kindMap[state.bibleTab];
     const arr = bibleArrayFor(kind);
     const cardsHtml = arr
-      .map(
-        (item) => `
+      .map((item) => {
+        const titles = (item.entries || []).map((e) => e.title).filter(Boolean).join(" · ");
+        return `
       <div class="bible-card" data-bible-kind="${kind}" data-bible-id="${item.id}">
         <div class="name">${escapeHtml(item.name)}</div>
-        <div class="desc">${escapeHtml(item.desc)}</div>
+        ${titles ? `<div class="desc">${escapeHtml(titles)}</div>` : ""}
         <span class="edit-icon">&#9998;</span>
-      </div>`
-      )
+      </div>`;
+      })
       .join("");
 
     body = `
@@ -1686,22 +1722,36 @@ function renderModal() {
     modalRootEl.innerHTML = "";
     return;
   }
-  const { kind, id } = state.bibleEdit;
+  const { kind, id, name, entries } = state.bibleEdit;
   const arr = bibleArrayFor(kind);
   const item = id ? arr.find((x) => x.id === id) : null;
   const label = bibleLabel(kind);
 
+  const entryRowsHtml = entries
+    .map(
+      (e) => `
+    <div class="bible-entry-row" data-entry-id="${e.id}">
+      <div class="bible-entry-head">
+        <input type="text" class="bible-entry-title" placeholder="Title" value="${escapeHtml(e.title)}">
+        <button class="bible-entry-del" data-entry-id="${e.id}" title="Remove entry">&times;</button>
+      </div>
+      <textarea class="bible-entry-text" placeholder="Description">${escapeHtml(e.text)}</textarea>
+    </div>`
+    )
+    .join("");
+
   modalRootEl.innerHTML = `
     <div class="modal-overlay" id="modalOverlay">
-      <div class="modal">
+      <div class="modal modal-bible">
         <div class="modal-head">
           <span class="modal-title">${item ? "Edit" : "Add"} ${label}</span>
           <button class="modal-close" id="modalClose">&times;</button>
         </div>
         <label>Name</label>
-        <input type="text" id="bibleEditName">
-        <label>Description</label>
-        <textarea id="bibleEditDesc"></textarea>
+        <input type="text" id="bibleEditName" value="${escapeHtml(name)}">
+        <label>Details</label>
+        <div class="bible-entries" id="bibleEntries">${entryRowsHtml}</div>
+        <button class="dashed-btn wide" id="addBibleEntryBtn" style="margin-bottom:20px"><span>+</span><span>Add Entry</span></button>
         <div class="modal-actions">
           ${item ? `<button class="modal-btn delete" id="modalDelete">Delete</button>` : ""}
           <button class="modal-btn done" id="modalDone">Done</button>
@@ -1710,14 +1760,15 @@ function renderModal() {
     </div>
   `;
 
-  document.getElementById("bibleEditName").value = item ? item.name : "";
-  document.getElementById("bibleEditDesc").value = item ? item.desc : "";
-
   document.getElementById("modalClose").onclick = closeBibleModal;
   document.getElementById("modalOverlay").addEventListener("mousedown", (e) => {
     if (e.target.id === "modalOverlay") closeBibleModal();
   });
   document.getElementById("modalDone").onclick = saveBibleModal;
+  document.getElementById("addBibleEntryBtn").onclick = addBibleEntry;
+  modalRootEl.querySelectorAll(".bible-entry-del").forEach((btn) => {
+    btn.onclick = () => removeBibleEntry(btn.dataset.entryId);
+  });
   const delBtn = document.getElementById("modalDelete");
   if (delBtn) delBtn.onclick = deleteBibleItem;
 }

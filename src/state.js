@@ -5,7 +5,7 @@ import { data } from "./model.js";
 export const state = {
   view: "scene", // 'scene' | 'chapter' | 'full' | 'settings' | 'overview'
   overviewHighlightTodos: false, // dims scene cards with no to-dos when on; persisted across reload
-  overviewShowWordCounts: false, // shows book/chapter/scene word counts in overview; persisted across reload
+  overviewShowWordCounts: false, // shows word counts (and the words-per-chapter chart) in overview; persisted across reload
   overviewChaptersOnly: false, // shows chapters as compact cards instead of full scene lists; persisted across reload
   viewBeforeOverview: null, // view to restore to when navigating away from an overview click
   leftOpenBeforeOverview: true,

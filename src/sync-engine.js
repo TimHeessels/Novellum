@@ -1,7 +1,7 @@
 "use strict";
 
 import { dbGet, dbPut, dbGetAll, dbGetAllByIndex, dbDelete, dbReplaceWhereIndex, dbReplaceAll } from "./db.js";
-import { sceneToMarkdown, markdownToScene } from "./model.js";
+import { sceneToMarkdown, markdownToScene, entriesFromLegacy } from "./model.js";
 import { getActiveBookId, flushSaveNow } from "./persistence.js";
 import * as gh from "./github-client.js";
 
@@ -148,7 +148,10 @@ export async function getSyncStatus() {
     configured: !!(settings.token && settings.owner && settings.repo),
     lastPushedAt: settings.lastPushedAt || null,
     lastPulledAt: settings.lastPulledAt || null,
-    pendingCount: outbox.length,
+    // Excludes entries the user marked "Ignore" in the push preview — those sit in the outbox
+    // indefinitely (until edited again or un-ignored) but shouldn't count toward "Push N changes",
+    // since clicking that button won't actually send them. See setOutboxEntrySkipped.
+    pendingCount: outbox.filter((e) => !e.skipped).length,
     conflictCount: conflicts.length,
   };
 }
@@ -224,6 +227,18 @@ export async function enqueueSync(kind, targetId, bookId = getActiveBookId()) {
 
 export async function listOutbox() {
   return dbGetAll("outbox");
+}
+
+/** Marks (or unmarks) an outbox entry so drainOutbox skips it — the "Ignore this change" action in
+ *  the push preview, for something like a story-bible edit the user doesn't want sent yet. The
+ *  entry stays in the outbox (still shows up as unsynced) rather than being deleted, so it isn't
+ *  silently lost; it starts being pushed again either when explicitly un-ignored here, or the next
+ *  time enqueueSync re-enqueues that same target (a fresh edit — dbPut there writes a plain new
+ *  record with no `skipped` field, which is exactly the "this edit should go out" default). */
+export async function setOutboxEntrySkipped(key, skipped) {
+  const entry = await dbGet("outbox", key);
+  if (!entry) return;
+  await dbPut("outbox", { ...entry, skipped });
 }
 
 /**
@@ -312,7 +327,7 @@ function buildBible(bibleEntries) {
     bibleEntries
       .filter((b) => b.kind === kind)
       .sort((a, b) => a.order - b.order)
-      .map((b) => ({ id: b.id, name: b.name, desc: b.desc }));
+      .map((b) => ({ id: b.id, name: b.name, entries: entriesFromLegacy(b) }));
   return { characters: byKind("character"), locations: byKind("location"), concepts: byKind("concept") };
 }
 
@@ -408,12 +423,13 @@ export async function drainOutbox(onProgress, { force = false } = {}) {
   if (!token || !owner || !repo) {
     // `paused: true` here too — this is just as much a "sync could not proceed" outcome as an
     // auth/rate-limit failure, and the caller only surfaces `pauseReason` when paused is true.
-    return { pushed: 0, conflicts: 0, paused: true, pauseReason: "GitHub isn't configured yet (see Settings).", pushedTargets: new Set() };
+    return { pushed: 0, conflicts: 0, skipped: 0, paused: true, pauseReason: "GitHub isn't configured yet (see Settings).", pushedTargets: new Set() };
   }
 
   const entries = await dbGetAll("outbox");
   let pushed = 0;
   let conflicts = 0;
+  let skipped = 0;
   let paused = false;
   let pauseReason = null;
   // Targets this call successfully pushed — callers that pull again shortly after a push (e.g.
@@ -426,6 +442,12 @@ export async function drainOutbox(onProgress, { force = false } = {}) {
 
   for (const entry of entries) {
     if (paused) break;
+    // Unlike the backoff check below, `force` never overrides an explicit user "Ignore" — that's
+    // a deliberate choice, not a transient failure to retry through.
+    if (entry.skipped) {
+      skipped += 1;
+      continue;
+    }
     if (!force && !backoffReady(entry)) continue;
 
     try {
@@ -461,7 +483,7 @@ export async function drainOutbox(onProgress, { force = false } = {}) {
     }
   }
 
-  return { pushed, conflicts, paused, pauseReason, pushedTargets };
+  return { pushed, conflicts, skipped, paused, pauseReason, pushedTargets };
 }
 
 /* ---------------------------------------------------------------- */
@@ -541,10 +563,13 @@ async function applyRemoteManifest(bookId, remoteManifest, remoteByPath, token, 
 
 async function applyRemoteBible(bookId, remoteBible) {
   const now = new Date().toISOString();
+  const toRow = (kind) => (c, i) => ({
+    id: c.id, name: c.name, entries: entriesFromLegacy(c), bookId, kind, order: i, updatedAt: now,
+  });
   const rows = [
-    ...(remoteBible.characters || []).map((c, i) => ({ ...c, bookId, kind: "character", order: i, updatedAt: now })),
-    ...(remoteBible.locations || []).map((c, i) => ({ ...c, bookId, kind: "location", order: i, updatedAt: now })),
-    ...(remoteBible.concepts || []).map((c, i) => ({ ...c, bookId, kind: "concept", order: i, updatedAt: now })),
+    ...(remoteBible.characters || []).map(toRow("character")),
+    ...(remoteBible.locations || []).map(toRow("location")),
+    ...(remoteBible.concepts || []).map(toRow("concept")),
   ];
   await dbReplaceWhereIndex("bibleEntries", "bookId", bookId, rows);
 }
@@ -740,7 +765,10 @@ export async function previewPush() {
       else if (localRaw === remoteRaw) changeType = "unchanged";
       else changeType = "update";
 
-      return { key: entry.key, bookId: entry.bookId, kind: entry.kind, targetId: entry.targetId, path, changeType, localRaw, remoteRaw };
+      return {
+        key: entry.key, bookId: entry.bookId, kind: entry.kind, targetId: entry.targetId, path,
+        changeType, localRaw, remoteRaw, skipped: !!entry.skipped,
+      };
     })
   );
 
@@ -752,11 +780,16 @@ export async function previewPush() {
  * sibling of reconcileBook. For manifest, bible, and every scene this device already knows about:
  * if the remote sha differs from what was last synced, fetch the remote blob and pair it with the
  * current local content. Flags `dirty: true` when a pending outbox entry means reconcileBook
- * would record a conflict for that target instead of fast-forwarding it. Deliberately doesn't
- * detect brand-new remote scenes (referenced by the remote manifest but not yet adopted locally)
- * — summarizeManifest's own "Chapters added/removed"/"Scene placement" fields already surface
- * that structural change, and reconcileBook itself only previews scene *content* for scenes that
- * already exist locally, same as this function.
+ * would record a conflict for that target instead of fast-forwarding it.
+ *
+ * When the manifest changed, also diffs remote vs local chapter/sceneId lists to call out
+ * individual scenes by title as `addedScenes` (exist remotely but not locally yet — reconcileBook
+ * will adopt them in full) or `removedScenes` (referenced locally but no longer by any chapter on
+ * GitHub — reconcileBook never deletes the local scene row, but it does drop out of every
+ * chapter, i.e. out of the visible manuscript, once the manifest's chapters are adopted). This is
+ * a best-effort itemization on top of summarizeManifest's own generic "Chapters added/removed" /
+ * "Scene placement" fields, not a replacement for them (those still cover chapter-level and
+ * within-existing-chapter moves).
  *
  * `justPushed` (a `"kind:targetId"` Set, e.g. from pushChanges's `pushedTargets`) excludes targets
  * this same device just pushed successfully — same lag reasoning as reconcileBook/
@@ -768,7 +801,7 @@ export async function previewPull(bookId, justPushed = new Set()) {
   const emptyShape = {
     manifestChanged: false, manifestDirty: false, manifestCurrentRaw: null, manifestRemoteRaw: null,
     bibleChanged: false, bibleDirty: false, bibleCurrentRaw: null, bibleRemoteRaw: null,
-    changedScenes: [],
+    addedScenes: [], removedScenes: [], changedScenes: [],
   };
   const { token, owner, repo, defaultBranch } = await getGithubSettings();
   if (!token || !owner || !repo) return { ...emptyShape, skipped: true };
@@ -786,7 +819,17 @@ export async function previewPull(bookId, justPushed = new Set()) {
   const prefix = `books/${bookId}/`;
   const meta = (await dbGet("manifestMeta", bookId)) || {};
 
+  // Fetched up front (not just for changedScenes below) since addedScenes/removedScenes also need
+  // to know which scene ids already exist locally, matching applyRemoteManifest's own check.
+  const [localScenes, sceneSyncRows] = await Promise.all([
+    dbGetAllByIndex("scenes", "bookId", bookId),
+    dbGetAllByIndex("sceneSync", "bookId", bookId),
+  ]);
+  const localScenesById = new Map(localScenes.map((sc) => [sc.id, sc]));
+  const syncById = new Map(sceneSyncRows.map((s) => [s.id, s]));
+
   let manifestChanged = false, manifestDirty = false, manifestCurrentRaw = null, manifestRemoteRaw = null;
+  let addedScenes = [], removedScenes = [];
   const manifestSha = remoteByPath.get(`${prefix}manifest.json`);
   if (manifestSha && manifestSha !== meta.manifestSha && !justPushed.has(`manifest:${bookId}`)) {
     manifestChanged = true;
@@ -795,6 +838,33 @@ export async function previewPull(bookId, justPushed = new Set()) {
       getLocalContentForConflict({ bookId, kind: "manifest", targetId: bookId }),
       gh.getBlob(token, owner, repo, manifestSha).then((b) => b.content),
     ]);
+
+    try {
+      const remoteManifest = JSON.parse(manifestRemoteRaw);
+      const localManifest = JSON.parse(manifestCurrentRaw);
+      const remoteSceneIds = new Set(remoteManifest.chapters.flatMap((ch) => ch.sceneIds || []));
+      const localSceneIds = new Set(localManifest.chapters.flatMap((ch) => ch.sceneIds || []));
+
+      const newIds = [...remoteSceneIds].filter((id) => !localScenesById.has(id));
+      addedScenes = (
+        await Promise.all(
+          newIds.map(async (id) => {
+            const sha = remoteByPath.get(`${prefix}scenes/${id}.md`);
+            if (!sha) return null;
+            const blob = await gh.getBlob(token, owner, repo, sha);
+            const parsed = markdownToScene(blob.content);
+            return { id, title: parsed.title || "Untitled scene", remoteRaw: blob.content };
+          })
+        )
+      ).filter(Boolean);
+
+      removedScenes = [...localSceneIds]
+        .filter((id) => !remoteSceneIds.has(id) && localScenesById.has(id))
+        .map((id) => ({ id, title: localScenesById.get(id).title || "Untitled scene" }));
+    } catch {
+      // Best-effort — if either manifest fails to parse, skip the itemized add/remove list;
+      // summarizeManifest's generic fields (rendered separately) still cover the change.
+    }
   }
 
   let bibleChanged = false, bibleDirty = false, bibleCurrentRaw = null, bibleRemoteRaw = null;
@@ -808,12 +878,8 @@ export async function previewPull(bookId, justPushed = new Set()) {
     ]);
   }
 
-  // Scenes — only ones already local, matching reconcileBook's own scope (see doc comment above).
-  const [localScenes, sceneSyncRows] = await Promise.all([
-    dbGetAllByIndex("scenes", "bookId", bookId),
-    dbGetAllByIndex("sceneSync", "bookId", bookId),
-  ]);
-  const syncById = new Map(sceneSyncRows.map((s) => [s.id, s]));
+  // Scenes whose content changed remotely — only ones already local, matching reconcileBook's own
+  // scope (addedScenes above covers the "not local yet" case).
   const toFetch = localScenes
     .map((sc) => ({ sc, remoteSha: remoteByPath.get(`${prefix}scenes/${sc.id}.md`), knownSha: syncById.get(sc.id)?.remoteSha }))
     .filter(({ sc, remoteSha, knownSha }) => remoteSha && remoteSha !== knownSha && !justPushed.has(`scene:${sc.id}`));
@@ -828,7 +894,11 @@ export async function previewPull(bookId, justPushed = new Set()) {
     })
   );
 
-  return { manifestChanged, manifestDirty, manifestCurrentRaw, manifestRemoteRaw, bibleChanged, bibleDirty, bibleCurrentRaw, bibleRemoteRaw, changedScenes };
+  return {
+    manifestChanged, manifestDirty, manifestCurrentRaw, manifestRemoteRaw,
+    bibleChanged, bibleDirty, bibleCurrentRaw, bibleRemoteRaw,
+    addedScenes, removedScenes, changedScenes,
+  };
 }
 
 /* ---------------------------------------------------------------- */

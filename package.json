@@ -1,0 +1,21 @@
+{
+  "name": "novellum",
+  "version": "1.0.0",
+  "description": "Minimal novel writing tool using git to store your work.",
+  "main": "worker.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TimHeessels/Novellum.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/TimHeessels/Novellum/issues"
+  },
+  "homepage": "https://github.com/TimHeessels/Novellum#readme"
+}

@@ -258,6 +258,14 @@ export function bibleLabel(kind) {
   return "Concept";
 }
 
+// Bible items used to store a single `desc` string. Reads from IndexedDB rows or a pulled
+// bible.json may still be in that old shape, so fold it into one untitled entry on the way in.
+export function entriesFromLegacy(row) {
+  if (Array.isArray(row.entries)) return row.entries;
+  if (row.desc) return [{ id: uid("entry"), title: "", text: row.desc }];
+  return [];
+}
+
 /* ---------------------------------------------------------------- */
 /* Scene <-> Markdown+frontmatter (de)serialization                 */
 /* Every frontmatter value is written via JSON.stringify — a JSON   */
