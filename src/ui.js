@@ -602,6 +602,7 @@ export function render() {
 
 export function openSettings() {
   state.bookSwitcherOpen = false;
+  state.settingsTab = "sync";
   if (isMobileViewport()) {
     if (state.view === "overview") restorePanelsBeforeOverview();
     state.view = "settings";
@@ -618,6 +619,12 @@ const VIEW_MODE_ICON = {
   overview: `<svg viewBox="0 0 512 512" fill="currentColor"><path d="M64 32C28.7 32 0 60.7 0 96L0 416c0 35.3 28.7 64 64 64l384 0c35.3 0 64-28.7 64-64l0-320c0-35.3-28.7-64-64-64L64 32zm88 64l0 64-88 0 0-64 88 0zm56 0l88 0 0 64-88 0 0-64zm240 0l0 64-88 0 0-64 88 0zM64 224l88 0 0 64-88 0 0-64zm232 0l0 64-88 0 0-64 88 0zm64 0l88 0 0 64-88 0 0-64zM152 352l0 64-88 0 0-64 88 0zm56 0l88 0 0 64-88 0 0-64zm240 0l0 64-88 0 0-64 88 0z"/></svg>`,
 };
 const VIEW_MODE_LABEL = { scene: "Current scene", chapter: "Current chapter", full: "Full manuscript", overview: "Overview" };
+
+const PANEL_ICON = {
+  collapseRight: `<svg viewBox="0 0 320 512" fill="currentColor"><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-192 192c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L233.4 256 41.4 86.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l192 192z"/></svg>`,
+  collapseLeft: `<svg viewBox="0 0 320 512" fill="currentColor"><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l192 192c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L86.6 256 278.6 86.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-192 192z"/></svg>`,
+  sceneDetails: `<svg viewBox="0 0 512 512" fill="currentColor"><path d="M40 48C26.7 48 16 58.7 16 72l0 48c0 13.3 10.7 24 24 24l48 0c13.3 0 24-10.7 24-24l0-48c0-13.3-10.7-24-24-24L40 48zM192 64c-17.7 0-32 14.3-32 32s14.3 32 32 32l288 0c17.7 0 32-14.3 32-32s-14.3-32-32-32L192 64zm0 160c-17.7 0-32 14.3-32 32s14.3 32 32 32l288 0c17.7 0 32-14.3 32-32s-14.3-32-32-32l-288 0zm0 160c-17.7 0-32 14.3-32 32s14.3 32 32 32l288 0c17.7 0 32-14.3 32-32s-14.3-32-32-32l-288 0zM16 232l0 48c0 13.3 10.7 24 24 24l48 0c13.3 0 24-10.7 24-24l0-48c0-13.3-10.7-24-24-24l-48 0c-13.3 0-24 10.7-24 24zM40 368c-13.3 0-24 10.7-24 24l0 48c0 13.3 10.7 24 24 24l48 0c13.3 0 24-10.7 24-24l0-48c0-13.3-10.7-24-24-24l-48 0z"/></svg>`,
+};
 
 const SYNC_ICON = {
   cloud: `<svg viewBox="0 0 640 512" fill="currentColor"><path d="M537.6 226.6c4.1-10.7 6.4-22.4 6.4-34.6c0-53-43-96-96-96c-19.7 0-38.1 6-53.3 16.2C367 64.2 315.3 32 256 32c-88.4 0-160 71.6-160 160c0 2.7 .1 5.4 .2 8.1C40.2 219.8 0 273.2 0 336c0 79.5 64.5 144 144 144l368 0c70.7 0 128-57.3 128-128c0-61.9-44-113.6-102.4-125.4z"/></svg>`,
@@ -1028,15 +1035,18 @@ function renderLeftPanelDesktop() {
 
   if (!state.leftOpen) {
     leftPanelEl.style.width = "40px";
-    leftPanelEl.style.padding = "16px 0 0";
+    leftPanelEl.style.padding = "0";
     leftHandleEl.style.display = "none";
-    leftPanelEl.innerHTML = `<button class="collapsed-tab left-collapsed" id="leftShow">&rsaquo; Book Details</button>`;
+    leftPanelEl.innerHTML = `
+      <div class="left-panel-body"></div>
+      <button class="panel-footer-btn justify-center" id="leftShow" title="Expand panel">${PANEL_ICON.collapseRight}</button>
+    `;
     document.getElementById("leftShow").onclick = openLeftFromCollapsed;
     return;
   }
 
   leftPanelEl.style.width = state.leftWidth + "px";
-  leftPanelEl.style.padding = "16px 10px";
+  leftPanelEl.style.padding = "0";
   leftHandleEl.style.display = "";
 
   let body = "";
@@ -1054,7 +1064,7 @@ function renderLeftPanelDesktop() {
             const todoChipHtml = activeTodos > 0
               ? `<span class="scene-todo-chip">${activeTodos} to-do${activeTodos === 1 ? "" : "s"}</span>`
               : "";
-            return `<div class="scene-row ${cls}" data-chapter-id="${ch.id}" data-scene-id="${sc.id}"><span>${escapeHtml(sceneLabel(ch, sc))}</span>${todoChipHtml}</div>`;
+            return `<div class="scene-row ${cls}" data-chapter-id="${ch.id}" data-scene-id="${sc.id}"><span>${escapeHtml(sc.title)}</span>${todoChipHtml}</div>`;
           })
           .join("");
         return `<div class="chapter-block"><div class="chapter-name ${chapterActive}" data-chapter-id="${ch.id}">${escapeHtml(chapterLabel(ch))}</div>${scenesHtml}</div>`;
@@ -1143,18 +1153,20 @@ function renderLeftPanelDesktop() {
   }
 
   leftPanelEl.innerHTML = `
-    <div class="left-head">
-      <div class="left-tabs">
-        ${["manuscript", "bible", "book"]
-          .map((tab) => {
-            const active = state.leftTab === tab;
-            return `<button class="tbtn ${active ? "active" : ""}" data-left-tab="${tab}" title="${LEFT_TAB_LABEL[tab]}">${LEFT_TAB_ICON[tab]}${active ? `<span class="tab-label">${LEFT_TAB_LABEL[tab]}</span>` : ""}</button>`;
-          })
-          .join("")}
+    <div class="left-panel-body">
+      <div class="left-head">
+        <div class="left-tabs">
+          ${["manuscript", "bible", "book"]
+            .map((tab) => {
+              const active = state.leftTab === tab;
+              return `<button class="tbtn ${active ? "active" : ""}" data-left-tab="${tab}" title="${LEFT_TAB_LABEL[tab]}">${LEFT_TAB_ICON[tab]}${active ? `<span class="tab-label">${LEFT_TAB_LABEL[tab]}</span>` : ""}</button>`;
+            })
+            .join("")}
+        </div>
       </div>
-      <button class="panel-collapse-btn" id="leftHide" title="Collapse panel">&lsaquo;</button>
+      ${body}
     </div>
-    ${body}
+    <button class="panel-footer-btn" id="leftHide" title="Collapse panel">${PANEL_ICON.collapseLeft}<span>Collapse</span></button>
   `;
 
   document.getElementById("leftHide").onclick = toggleLeft;
@@ -1668,26 +1680,31 @@ function renderRightPanelDesktop() {
 
   if (!state.rightOpen) {
     rightPanelEl.style.width = "40px";
-    rightPanelEl.style.padding = "16px 0 0";
+    rightPanelEl.style.padding = "0";
     rightHandleEl.style.display = "none";
-    rightPanelEl.innerHTML = `<button class="collapsed-tab" id="rightShow">&lsaquo; Scene Details</button>`;
+    rightPanelEl.innerHTML = `
+      <div class="right-panel-body"></div>
+      <button class="panel-footer-btn justify-center" id="rightShow" title="Expand panel">${PANEL_ICON.collapseLeft}</button>
+    `;
     document.getElementById("rightShow").onclick = toggleRight;
     return;
   }
 
   rightPanelEl.style.width = state.rightWidth + "px";
-  rightPanelEl.style.padding = "20px";
+  rightPanelEl.style.padding = "0";
   rightHandleEl.style.display = "";
 
   const { chapter: ch, scene: sc } = getSceneAndChapter(state.activeSceneId);
 
   if (!sc) {
     rightPanelEl.innerHTML = `
-      <div class="right-head">
-        <button class="panel-collapse-btn" id="rightHide" title="Collapse panel">&rsaquo;</button>
-        <span class="right-label">Scene Details</span>
+      <div class="right-panel-body">
+        <div class="left-tabs" style="margin-bottom:12px">
+          <div class="tbtn active" style="cursor:default">${PANEL_ICON.sceneDetails}<span class="tab-label">Scene Details</span></div>
+        </div>
+        <div class="no-scene">Click into a scene's text to see its details here.</div>
       </div>
-      <div class="no-scene">Click into a scene's text to see its details here.</div>
+      <button class="panel-footer-btn justify-end" id="rightHide" title="Collapse panel"><span>Collapse</span>${PANEL_ICON.collapseRight}</button>
     `;
     document.getElementById("rightHide").onclick = toggleRight;
     return;
@@ -1705,22 +1722,22 @@ function renderRightPanelDesktop() {
     .join("");
 
   rightPanelEl.innerHTML = `
-    <div class="right-head">
-      <button class="panel-collapse-btn" id="rightHide" title="Collapse panel">&rsaquo;</button>
-      <span class="right-label">Chapter ${chapterNumber(ch)} - Scene ${sceneNumber(ch, sc)}</span>
+    <div class="right-panel-body">
+      <div class="left-tabs" style="margin-bottom:12px">
+        <div class="tbtn active" style="cursor:default">${PANEL_ICON.sceneDetails}<span class="tab-label">Scene Details</span></div>
+      </div>
+      <div class="right-label" style="margin:0 0 8px">Chapter ${chapterNumber(ch)} &middot; Scene ${sceneNumber(ch, sc)}</div>
+      <div class="scene-title-heading" contenteditable="true" id="sceneTitleText"></div>
+      <div class="summary-block" style="margin-top:22px">
+        <div class="section-label">Summary</div>
+        <div class="summary-text" contenteditable="true" id="summaryText"></div>
+      </div>
+      <div class="section-label">To-Do</div>
+      ${todosHtml}
+      <button class="dashed-btn wide" id="addTodoBtn" style="margin-top:8px"><span>+</span><span>Add To-Do</span></button>
+      <button class="delete-scene-btn" id="deleteSceneBtn">Delete Scene</button>
     </div>
-    <div class="summary-block">
-      <div class="section-label">Title</div>
-      <div class="summary-text" contenteditable="true" id="sceneTitleText"></div>
-    </div>
-    <div class="summary-block">
-      <div class="section-label">Summary</div>
-      <div class="summary-text" contenteditable="true" id="summaryText"></div>
-    </div>
-    <div class="section-label">To-Do</div>
-    ${todosHtml}
-    <button class="dashed-btn wide" id="addTodoBtn" style="margin-top:8px"><span>+</span><span>Add To-Do</span></button>
-    <button class="delete-scene-btn" id="deleteSceneBtn">Delete Scene</button>
+    <button class="panel-footer-btn justify-end" id="rightHide" title="Collapse panel"><span>Collapse</span>${PANEL_ICON.collapseRight}</button>
   `;
 
   document.getElementById("rightHide").onclick = toggleRight;

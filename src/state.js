@@ -25,6 +25,7 @@ export const state = {
   bookSwitcherOpen: false,
   viewSwitcherOpen: false,
   settingsOpen: false,
+  settingsTab: "sync", // 'sync' | 'history' | 'settings' — which tab the GitHub Sync modal shows
   newBookOpen: false,
   splitConfirm: null, // { chapterId, sceneId, beforeHtml, selectedHtml, afterHtml }
   deleteSceneConfirm: null, // sceneId

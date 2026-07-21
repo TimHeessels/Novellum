@@ -38,56 +38,55 @@ export async function renderSettingsView(container, callbacks, { justPushed = ne
     state.remoteChangeCount = remoteCheck.count;
   }
 
+  const activeCount = outbox.filter((e) => !e.skipped).length;
+  // Not-yet-connected accounts never see the tab bar (there's nothing to sync/browse yet), so
+  // they always land on the plain setup flow regardless of whatever tab was last selected.
+  const tab = isConnected ? state.settingsTab || "sync" : "sync";
+
   container.innerHTML = `
     <div class="settings-view">
-      ${isConnected ? `
-        ${conflicts.length > 0 ? renderConflictsSection(conflicts) : ""}
-        ${outbox.length > 0 ? renderPushSection(outbox) : ""}
-        ${remoteChangeCount > 0 ? renderPullSection(remoteChangeCount) : ""}
-        <div id="syncStatus" class="settings-status"></div>
-      ` : ""}
-
       <div class="settings-header">
-        <button class="tbtn" id="settingsBack">&lsaquo; Back to Manuscript</button>
-        <h2>GitHub Sync Settings</h2>
+        <h2>GitHub Sync</h2>
+        <button class="modal-close" id="settingsBack">&times;</button>
       </div>
 
-      ${isConnected
-        ? renderConnectedPhase(settings, vaultLooksUsable)
-        : state.pendingOAuthVaultPick
-          ? renderVaultPickPhase(state.pendingOAuthVaultPick)
-          : renderSetupPhase()}
+      ${isConnected ? renderTabBar(tab, conflicts.length, activeCount, remoteChangeCount) : ""}
 
       ${isConnected ? `
-        <div class="settings-section">
-          <div class="section-label">Sync stats</div>
-          <div>Last pushed: ${settings.lastPushedAt ? formatRelativeTime(settings.lastPushedAt) : "Never"}</div>
-          <div>Last pulled: ${settings.lastPulledAt ? formatRelativeTime(settings.lastPulledAt) : "Never"}</div>
-          <div id="pendingChangesStat">Pending changes: ${outbox.length}${outbox.some((e) => e.skipped) ? ` (${outbox.filter((e) => e.skipped).length} ignored)` : ""}</div>
+        <div class="settings-tab-panel"${tab === "sync" ? "" : " hidden"}>
+          <div id="syncStatus" class="settings-status"></div>
+          ${conflicts.length > 0 ? renderConflictsSection(conflicts) : ""}
+          ${outbox.length > 0 ? renderPushSection(outbox) : ""}
+          ${remoteChangeCount > 0 ? renderPullSection(remoteChangeCount) : ""}
+          ${conflicts.length === 0 && outbox.length === 0 && remoteChangeCount === 0
+            ? `<div class="settings-status" style="margin-top:2px">You're all synced up.</div>`
+            : ""}
         </div>
 
-        <div class="settings-section">
-          <div class="section-label">History</div>
-          <div class="settings-status" style="margin:0 0 8px">
+        <div class="settings-tab-panel"${tab === "history" ? "" : " hidden"}>
+          <div class="settings-status" style="margin:0 0 14px">
             Every sync creates a commit — browse past versions of this book and restore one if
             something's missing.
           </div>
-          <button class="tbtn" id="historyBrowse">Browse History</button>
-          <div id="historyPanel" style="margin-top:10px"></div>
+          <div id="historyPanel"></div>
         </div>
-      ` : ""}
 
-      <div class="settings-section">
-        <div class="section-label">Manual Backup</div>
-        <div class="settings-status" style="margin:0 0 8px">
-          A local JSON snapshot of the current book — separate from GitHub sync, useful as a one-off backup.
+        <div class="settings-tab-panel"${tab === "settings" ? "" : " hidden"}>
+          ${renderConnectedPhase(settings, vaultLooksUsable)}
+          <div class="settings-section">
+            <div class="section-label">Sync stats</div>
+            <div>Last pushed: ${settings.lastPushedAt ? formatRelativeTime(settings.lastPushedAt) : "Never"}</div>
+            <div>Last pulled: ${settings.lastPulledAt ? formatRelativeTime(settings.lastPulledAt) : "Never"}</div>
+            <div id="pendingChangesStat">Pending changes: ${outbox.length}${outbox.some((e) => e.skipped) ? ` (${outbox.filter((e) => e.skipped).length} ignored)` : ""}</div>
+          </div>
+          ${renderManualBackupSection()}
         </div>
-        <div class="settings-actions-row">
-          <button class="tbtn" id="settingsExportJson">Export JSON</button>
-          <button class="tbtn" id="settingsImportJson">Import JSON</button>
-          <input type="file" id="settingsImportJsonFile" accept="application/json" style="display:none">
-        </div>
-      </div>
+      ` : `
+        ${state.pendingOAuthVaultPick
+          ? renderVaultPickPhase(state.pendingOAuthVaultPick)
+          : renderSetupPhase()}
+        ${renderManualBackupSection()}
+      `}
     </div>
   `;
 
@@ -178,38 +177,63 @@ export async function renderSettingsView(container, callbacks, { justPushed = ne
     };
   }
 
-  document.getElementById("settingsExportJson").onclick = () => {
-    const blob = new Blob([exportDataAsJson()], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `novellum-export-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  document.getElementById("settingsImportJson").onclick = () => {
-    document.getElementById("settingsImportJsonFile").click();
-  };
-
-  document.getElementById("settingsImportJsonFile").onchange = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        await importDataFromJson(reader.result);
-        const bookId = getActiveBookId();
-        if (notifyBookDataChanged) await notifyBookDataChanged(bookId);
-        setStatus("settingsStatus", "Import complete.", false);
-      } catch (err) {
-        setStatus("settingsStatus", `Import failed: ${err.message}`, true);
-      } finally {
-        e.target.value = "";
-      }
+  const exportJsonBtn = document.getElementById("settingsExportJson");
+  if (exportJsonBtn) {
+    exportJsonBtn.onclick = () => {
+      const blob = new Blob([exportDataAsJson()], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `novellum-export-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
     };
-    reader.readAsText(file);
-  };
+  }
+
+  const importJsonBtn = document.getElementById("settingsImportJson");
+  if (importJsonBtn) {
+    importJsonBtn.onclick = () => {
+      document.getElementById("settingsImportJsonFile").click();
+    };
+  }
+
+  const importJsonFileInput = document.getElementById("settingsImportJsonFile");
+  if (importJsonFileInput) {
+    importJsonFileInput.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          await importDataFromJson(reader.result);
+          const bookId = getActiveBookId();
+          if (notifyBookDataChanged) await notifyBookDataChanged(bookId);
+          setStatus("settingsStatus", "Import complete.", false);
+        } catch (err) {
+          setStatus("settingsStatus", `Import failed: ${err.message}`, true);
+        } finally {
+          e.target.value = "";
+        }
+      };
+      reader.readAsText(file);
+    };
+  }
+
+  if (isConnected) {
+    ["sync", "history", "settings"].forEach((name) => {
+      const btn = document.getElementById(`settingsTab-${name}`);
+      if (!btn) return;
+      btn.onclick = () => {
+        if (state.settingsTab === name) return;
+        state.settingsTab = name;
+        renderSettingsView(container, callbacks);
+      };
+    });
+
+    if (tab === "history") {
+      loadHistoryTab(document.getElementById("historyPanel"), bookId, container, callbacks);
+    }
+  }
 
   const resolveAllMineBtn = document.getElementById("resolveAllMine");
   const resolveAllTheirsBtn = document.getElementById("resolveAllTheirs");
@@ -317,19 +341,9 @@ export async function renderSettingsView(container, callbacks, { justPushed = ne
     }
   });
 
-  const pushPreviewToggleBtn = document.getElementById("pushPreviewToggle");
-  if (pushPreviewToggleBtn) {
-    pushPreviewToggleBtn.onclick = async () => {
-      const panel = document.getElementById("pushPreviewPanel");
-      const isHidden = panel.style.display === "none";
-      panel.style.display = isHidden ? "block" : "none";
-      pushPreviewToggleBtn.textContent = isHidden ? "Hide Preview" : "Preview Changes";
-      if (isHidden && !panel.dataset.loaded) {
-        panel.dataset.loaded = "1";
-        await loadPushPreviewInto(panel, notifyBookDataChanged);
-      }
-    };
-  }
+  const pushPreviewPanel = document.getElementById("pushPreviewPanel");
+  if (pushPreviewPanel) loadPushPreviewInto(pushPreviewPanel, notifyBookDataChanged);
+
   const pushNowBtn = document.getElementById("pushNowBtn");
   if (pushNowBtn) {
     pushNowBtn.onclick = async () => {
@@ -356,19 +370,9 @@ export async function renderSettingsView(container, callbacks, { justPushed = ne
     };
   }
 
-  const pullPreviewToggleBtn = document.getElementById("pullPreviewToggle");
-  if (pullPreviewToggleBtn) {
-    pullPreviewToggleBtn.onclick = async () => {
-      const panel = document.getElementById("pullPreviewPanel");
-      const isHidden = panel.style.display === "none";
-      panel.style.display = isHidden ? "block" : "none";
-      pullPreviewToggleBtn.textContent = isHidden ? "Hide Preview" : "Preview Changes";
-      if (isHidden && !panel.dataset.loaded) {
-        panel.dataset.loaded = "1";
-        await loadPullPreviewInto(panel, bookId, justPushed);
-      }
-    };
-  }
+  const pullPreviewPanel = document.getElementById("pullPreviewPanel");
+  if (pullPreviewPanel) loadPullPreviewInto(pullPreviewPanel, bookId, justPushed);
+
   const pullNowBtn = document.getElementById("pullNowBtn");
   if (pullNowBtn) {
     pullNowBtn.onclick = async () => {
@@ -398,27 +402,65 @@ export async function renderSettingsView(container, callbacks, { justPushed = ne
     };
   }
 
-  const historyBrowseBtn = document.getElementById("historyBrowse");
-  if (historyBrowseBtn) {
-    historyBrowseBtn.onclick = async () => {
-      const originalLabel = historyBrowseBtn.textContent;
-      historyBrowseBtn.disabled = true;
-      historyBrowseBtn.textContent = "Loading…";
-      const bookId = getActiveBookId();
-      const panel = document.getElementById("historyPanel");
-      // History browsing needs an unambiguous "current" to diff against — with a pending push or
-      // an unresolved conflict, is "current" the local edit or what's on GitHub? Re-checkable by
-      // just clicking again once the pending state above is synced/resolved.
-      const clean = await isBookClean(bookId);
-      historyBrowseBtn.disabled = false;
-      historyBrowseBtn.textContent = originalLabel;
-      if (!clean) {
-        panel.innerHTML = `<div class="settings-status error">You have pending changes or unresolved conflicts for this book — sync or resolve those first (see above), then browse history.</div>`;
-        return;
-      }
-      await renderHistoryList(panel, bookId, container, callbacks, []);
-    };
+}
+
+/** Loads the History tab's commit list the moment it's opened — no separate "Browse History"
+ *  click needed now that it's its own tab. Still gated on isBookClean first: history browsing
+ *  needs an unambiguous "current" to diff against, and with a pending push or an unresolved
+ *  conflict, is "current" the local edit or what's on GitHub? Re-checkable by switching tabs
+ *  again once the pending state (visible on the Sync tab) is synced/resolved. */
+async function loadHistoryTab(panel, bookId, container, callbacks) {
+  if (!panel) return;
+  panel.innerHTML = `<div class="diff-loading">Loading&hellip;</div>`;
+  const clean = await isBookClean(bookId);
+  if (!clean) {
+    panel.innerHTML = `<div class="settings-status error">You have pending changes or unresolved conflicts for this book — sync or resolve those first on the Sync tab, then come back to browse history.</div>`;
+    return;
   }
+  await renderHistoryList(panel, bookId, container, callbacks, []);
+}
+
+/** Tab bar shown across the top of the connected view — Sync/History/Settings. The badge on Sync
+ *  mirrors the topbar sync badge's own priority order (conflicts, then pending push, then pending
+ *  pull — see refreshSyncStatusUI in ui.js) rather than summing all three, so the two numbers
+ *  never tell conflicting stories. */
+function renderTabBar(activeTab, conflictCount, pushPendingCount, pullPendingCount) {
+  const syncBadgeCount = conflictCount || pushPendingCount || pullPendingCount;
+  const tabs = [
+    { id: "sync", label: "Sync", badge: syncBadgeCount > 0 ? syncBadgeCount : null },
+    { id: "history", label: "History", badge: null },
+    { id: "settings", label: "Settings", badge: null },
+  ];
+  return `
+    <div class="settings-tabs">
+      ${tabs
+        .map(
+          (t) => `
+        <button class="settings-tab${t.id === activeTab ? " active" : ""}" id="settingsTab-${t.id}">
+          ${t.label}${t.badge ? `<span class="settings-tab-badge">${t.badge}</span>` : ""}
+        </button>`
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+/** A local JSON snapshot of the current book — separate from GitHub sync, so it's offered
+ *  regardless of connection state (unconnected setup flow, or the connected Settings tab). */
+function renderManualBackupSection() {
+  return `
+    <div class="settings-section">
+      <div class="section-label">Manual Backup</div>
+      <div class="settings-status" style="margin:0 0 8px">
+        A local JSON snapshot of the current book — separate from GitHub sync, useful as a one-off backup.
+      </div>
+      <div class="settings-actions-row">
+        <button class="tbtn" id="settingsExportJson">Export JSON</button>
+        <button class="tbtn" id="settingsImportJson">Import JSON</button>
+        <input type="file" id="settingsImportJsonFile" accept="application/json" style="display:none">
+      </div>
+    </div>
+  `;
 }
 
 /** Shown right after a "Connect GitHub" redirect when the install grant covered more than one
@@ -562,10 +604,12 @@ function renderPushSection(outbox) {
         ${ignoredCount} change${ignoredCount === 1 ? "" : "s"} marked "Ignore" below — won't be sent until you include ${ignoredCount === 1 ? "it" : "them"} again.
       </div>
       <div class="settings-actions-row">
-        <button class="tbtn" id="pushPreviewToggle">Preview Changes</button>
         <button class="modal-btn done" id="pushNowBtn"${activeCount === 0 ? " disabled" : ""}>Push Now</button>
       </div>
-      <div id="pushPreviewPanel" style="display:none;margin-top:10px"></div>
+    </div>
+    <div class="settings-section">
+      <div class="section-label">Changes</div>
+      <div id="pushPreviewPanel"></div>
     </div>
   `;
 }
@@ -578,10 +622,9 @@ function renderPullSection(count) {
         What pulling right now would bring in from GitHub for this book.
       </div>
       <div class="settings-actions-row">
-        <button class="tbtn" id="pullPreviewToggle">Preview Changes</button>
         <button class="modal-btn done" id="pullNowBtn">Pull Now</button>
       </div>
-      <div id="pullPreviewPanel" style="display:none;margin-top:10px"></div>
+      <div id="pullPreviewPanel" style="margin-top:14px"></div>
     </div>
   `;
 }
@@ -1418,6 +1461,9 @@ async function loadRestorePreviewInto(diffEl, bookId, commitSha, container, call
         force: true,
         onPulled: (bookIds) => Promise.all(bookIds.map((id) => callbacks.notifyBookDataChanged && callbacks.notifyBookDataChanged(id))),
       });
+      // Jump back to the Sync tab so the outcome (syncStatus) actually has somewhere to render —
+      // it lives there, not on History, and this is the same tab every other sync action reports to.
+      state.settingsTab = "sync";
       await renderSettingsView(container, callbacks, { justPushed: pushResult.pushedTargets });
       const statusEl = document.getElementById("syncStatus");
       if (statusEl) {
