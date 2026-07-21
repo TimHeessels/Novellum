@@ -349,6 +349,7 @@ button{font-family:inherit}
 .bible-card:hover{background:var(--hover-bg);border-color:var(--card-border-hover)}
 .bible-card .name{font:600 12.5px 'Lora',serif;margin-bottom:4px;color:var(--text-strong)}
 .bible-card .desc{font-size:11.5px;line-height:1.5;color:var(--text-dim)}
+.bible-card .snippet{font-size:11.5px;line-height:1.5;color:var(--text-muted);margin-top:4px}
 .bible-card .edit-icon{
   position:absolute;top:8px;right:9px;font-size:11px;color:oklch(0.55 0.015 75);opacity:.5;
 }
@@ -524,3 +525,206 @@ button{font-family:inherit}
   color:var(--accent-hover);font:600 11.5px 'Manrope';padding:6px 10px;white-space:nowrap;
 }
 .st-split-btn:hover{background:var(--active-bg)}
+
+/* ================================================================ */
+/* Mobile layout (src/mobile-ui.js) — hidden by default; both this   */
+/* chrome and the desktop chrome above are always mounted and always */
+/* re-rendered together (see mobile-ui.js's header comment), and     */
+/* this media query is the ONLY thing that decides which is visible. */
+/* ================================================================ */
+
+.mobile-app{display:none}
+
+@media (max-width: 760px){
+  /* #modalRoot must be hidden here too, not just .topbar/.main — it's a sibling of those, not a
+     child, so it's outside the desktop chrome that display:none on .main would otherwise cover.
+     Without this, opening the bible editor / delete-scene / split / new-book confirm on mobile
+     would render BOTH this hidden desktop modal AND mobile's own bottom-sheet version of it at
+     once (both trees always render together; see mobile-ui.js's header comment). */
+  .topbar, .main, #modalRoot{display:none !important}
+
+  /* #setupBanner/#conflictBanner/#pullBanner are shared (not duplicated per chrome) and their
+     show/hide is already driven by refreshSyncStatusUI() regardless of viewport — just narrow
+     their padding a bit, and account for the safe area here since (unlike on desktop) this banner
+     is now the very first thing on screen, above .m-topbar. */
+  .setup-banner, .conflict-banner{padding:calc(env(safe-area-inset-top,0px) + 9px) 16px 9px;text-align:center}
+
+  /* 100vh doesn't account for mobile browser chrome (address bar) resizing the viewport — 100dvh
+     does, and falls back harmlessly to the existing 100vh rule above wherever it's unsupported. */
+  #app{height:100dvh}
+
+  .mobile-app{
+    display:flex;flex-direction:column;flex:1;min-height:0;
+  }
+
+  /* ---- Top bar ---- */
+  .m-topbar{
+    flex:none;display:flex;align-items:center;gap:10px;box-sizing:border-box;min-height:54px;
+    padding:calc(env(safe-area-inset-top,0px) + 10px) 16px 12px;border-bottom:1px solid var(--border);
+  }
+  .m-topbar-title-block{flex:1;min-width:0}
+  .m-topbar-title-single{flex:1;min-width:0;font:600 15px 'Lora',serif;color:var(--text-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .m-topbar-chapter{font:700 13px 'Lora',serif;color:var(--text-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .m-topbar-scene{font:500 10.5px 'Manrope';letter-spacing:.03em;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  .m-topbar-subtitle{font-size:10.5px;font-weight:600;color:var(--text-muted);margin-top:1px}
+  .m-topbar-spacer{flex:1}
+
+  .m-icon-btn{
+    flex:none;background:transparent;border:none;color:var(--text-strong);cursor:pointer;
+    display:flex;align-items:center;justify-content:center;padding:6px;margin:-6px;border-radius:6px;
+    font-size:18px;line-height:1;font-family:inherit;
+  }
+  .m-icon-btn:hover{background:var(--hover-bg-2)}
+  .m-btn-text{flex:none;background:transparent;border:none;color:var(--text-dim);cursor:pointer;font:500 13px 'Manrope';padding:6px 4px}
+  .m-btn-text-accent{flex:none;background:transparent;border:none;color:var(--accent-hover);cursor:pointer;font:700 13px 'Manrope';padding:6px 4px}
+
+  .m-sync-badge{
+    flex:none;display:flex;align-items:center;gap:6px;border-radius:6px;padding:6px 10px;
+    font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;border:1px solid var(--border);
+    background:transparent;color:var(--text-muted);white-space:nowrap;
+  }
+  .m-sync-dot{width:6px;height:6px;border-radius:50%;flex:none}
+  .m-sync-badge.m-sync-pending{border-color:var(--accent-hover);background:var(--accent-hover);color:var(--bg)}
+  .m-sync-badge.m-sync-conflict{border-color:var(--danger-border);color:var(--danger-text)}
+
+  .m-filter-btn{
+    flex:none;background:transparent;border:1px solid var(--border);color:var(--text-dim);
+    border-radius:7px;padding:6px 9px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;
+    display:flex;align-items:center;gap:5px;
+  }
+
+  /* ---- Content area — each tab's own child owns scrolling (not #mContent itself), so the   ---- */
+  /* ---- manuscript tab can keep its Summary/To-do drawer pinned outside the scrollable text. ---- */
+  .m-content{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+
+  .m-manuscript-scroll{flex:1;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch;padding:18px 18px 24px}
+  .m-manuscript-scroll .manuscript-text{font:400 17px/1.7 'Lora',serif;max-width:none;margin:0;padding:0}
+
+  .m-bible-scroll, .m-overview-scroll, .m-settings-wrap{flex:1;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch;padding:14px 16px 24px}
+  .m-settings-wrap .settings-view{padding:0 0 40px}
+
+  /* ---- Manuscript tab: Summary & To-do drawer ---- */
+  .m-drawer{flex:none;border-top:1px solid var(--border);background:var(--bg);padding:12px 18px calc(env(safe-area-inset-bottom,0px) + 12px)}
+  .m-drawer-toggle{
+    width:100%;display:flex;align-items:center;justify-content:space-between;background:transparent;
+    border:none;cursor:pointer;padding:6px 0;font:600 10.5px 'Manrope';text-transform:uppercase;
+    letter-spacing:.06em;color:var(--text-muted);
+  }
+  .m-drawer-chevron{color:var(--text-muted);font-size:11px;transition:transform .15s}
+  .m-drawer-body{padding-top:10px;max-height:42vh;overflow:auto}
+  .m-drawer-field{margin-bottom:16px}
+  .m-drawer-input, .m-drawer-textarea{
+    width:100%;box-sizing:border-box;background:var(--input-bg);border:1px solid var(--border);
+    border-radius:6px;color:var(--text);padding:8px 10px;font-size:13px;font-family:inherit;
+  }
+  .m-drawer-textarea{line-height:1.6;resize:vertical}
+  .m-drawer-todos{display:flex;flex-direction:column;gap:2px}
+  .m-drawer-todos .todo-row .m-todo-text{
+    flex:1;background:transparent;border:none;color:var(--text);font:inherit;font-size:13px;
+    padding:2px 3px;margin:-2px -3px;border-radius:4px;
+  }
+  .m-drawer-todos .todo-row .m-todo-text:focus{background:var(--hover-bg);outline:none}
+  .m-drawer-todos .todo-row.done .m-todo-text{text-decoration:line-through}
+  .m-drawer-actions{display:flex;gap:8px;margin-top:12px}
+  .m-btn{
+    flex:1;border-radius:7px;padding:11px;font-size:12.5px;font-weight:600;cursor:pointer;
+    font-family:inherit;border:1px solid var(--border);background:transparent;color:var(--text-dim);
+  }
+  .m-btn:disabled{opacity:.5;cursor:default}
+
+  /* ---- Tab bar ---- */
+  .m-tabbar{flex:none;display:flex;border-top:1px solid var(--border);padding:8px 6px calc(env(safe-area-inset-bottom,0px) + 8px)}
+  .m-tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;background:transparent;border:none;padding:4px;cursor:pointer;color:var(--text-muted);font-family:inherit}
+  .m-tab.active{color:var(--accent-hover)}
+  .m-tab-icon{display:flex}
+  .m-tab-label{font-size:10px;font-weight:600}
+
+  /* ---- Bible tab ---- */
+  .m-bible-chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;margin-bottom:14px}
+  .m-bible-chip{
+    flex:none;border:none;border-radius:6px;padding:6px 11px;font-size:11.5px;font-weight:600;
+    white-space:nowrap;cursor:pointer;font-family:inherit;background:transparent;color:var(--text-muted);
+  }
+  .m-bible-chip.active{background:var(--active-bg);color:var(--accent-hover)}
+  .m-bible-list{display:flex;flex-direction:column;gap:8px}
+  .m-bible-card{position:relative;padding:11px 12px;border:1px solid var(--card-border);border-radius:8px;cursor:pointer}
+  .m-bible-card:active{background:var(--hover-bg)}
+  .m-bible-card-name{font:600 13px 'Lora',serif;color:var(--text-strong);margin-bottom:4px}
+  .m-bible-card-desc{font-size:12px;line-height:1.5;color:var(--text-dim)}
+  .m-bible-card-snippet{font-size:12px;line-height:1.5;color:var(--text-muted);margin-top:4px}
+
+  /* ---- Full-screen overlay (bible entry editor) ---- */
+  .m-fullscreen{position:fixed;inset:0;z-index:45;background:var(--bg);display:flex;flex-direction:column}
+  .m-fullscreen-header{
+    flex:none;display:flex;align-items:center;justify-content:space-between;
+    padding:calc(env(safe-area-inset-top,0px) + 14px) 16px 12px;border-bottom:1px solid var(--border);
+  }
+  .m-fullscreen-body{flex:1;overflow:auto;padding:16px}
+  .m-bible-entry-row{border:1px solid var(--card-border);border-radius:7px;padding:10px;margin-bottom:12px}
+  .m-bible-entry-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .m-bible-entry-title{
+    flex:1;background:var(--input-bg);border:1px solid var(--modal-border);border-radius:6px;
+    color:var(--text-strong);font:600 13px 'Lora',serif;padding:7px 9px;
+  }
+  .m-bible-entry-text{
+    width:100%;box-sizing:border-box;background:var(--input-bg);border:1px solid var(--modal-border);
+    border-radius:6px;color:oklch(0.85 0.008 75);font:400 13px 'Manrope';line-height:1.6;padding:9px 10px;
+    min-height:70px;resize:vertical;
+  }
+
+  /* ---- Overview tab ---- */
+  .m-overview-chapter{border:1px solid var(--card-border);border-radius:9px;padding:13px 14px;margin-bottom:16px}
+  .m-overview-chapter-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:2px}
+  .m-overview-chapter-title{font:700 14px 'Lora',serif;color:var(--text-strong);cursor:pointer}
+  .m-overview-chapter-status{font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:10px}
+  .m-overview-chip{
+    flex:none;font-size:10.5px;font-weight:600;color:var(--accent-hover);background:oklch(0.72 0.13 68 / .13);
+    border:1px solid oklch(0.72 0.13 68 / .3);border-radius:20px;padding:2px 7px;white-space:nowrap;
+  }
+  .m-overview-scenes{display:flex;flex-direction:column;gap:6px}
+  .m-overview-scene-row{
+    display:flex;justify-content:space-between;gap:8px;padding:7px 9px;border-radius:6px;
+    background:var(--hover-bg);cursor:pointer;
+  }
+  .m-overview-scene-title{font-size:12.5px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .m-overview-scene-wc{flex:none;font-size:11px;color:var(--text-muted)}
+
+  /* ---- Bottom sheets ---- */
+  .m-sheet-overlay{position:fixed;inset:0;z-index:40;display:flex;flex-direction:column;justify-content:flex-end;background:rgba(0,0,0,.55)}
+  .m-sheet{
+    background:var(--modal-bg);border:1px solid var(--modal-border);border-radius:16px 16px 0 0;
+    box-sizing:border-box;padding:16px 16px calc(env(safe-area-inset-bottom,0px) + 20px);
+    max-height:78vh;overflow:auto;
+  }
+  .m-sheet-tall{max-height:88vh}
+  .m-sheet-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px}
+  .m-sheet-title{font:600 14px 'Lora',serif;color:var(--text-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .m-sheet-subtitle{font:700 12.5px 'Lora',serif;color:var(--text-strong);margin:4px 0 10px}
+  .m-sheet-body{}
+
+  .m-toggle-row{display:flex;align-items:center;justify-content:space-between;padding:10px 4px;cursor:pointer;font-size:13px;color:var(--text)}
+
+  /* ---- Nav sheet ---- */
+  .m-nav-book-row{flex:1;min-width:0;display:flex;align-items:center;gap:6px;cursor:pointer}
+  .m-nav-book-caret{font-size:10px;color:var(--text-muted)}
+  .m-nav-book-list{border:1px solid var(--border-soft);border-radius:8px;padding:6px;margin-bottom:14px}
+  .m-nav-book-item{padding:9px 10px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--text)}
+  .m-nav-book-item.active{background:var(--active-bg);color:var(--accent-hover)}
+  .m-nav-book-new{display:flex;gap:6px;color:var(--text-muted);border-top:1px solid var(--border-soft);margin-top:4px;padding-top:10px}
+
+  .m-nav-chapter-block{margin-bottom:6px}
+  .m-nav-chapter-input{
+    width:100%;box-sizing:border-box;background:transparent;border:none;padding:6px 6px;margin-left:2px;
+    font:700 12.5px 'Lora',serif;color:var(--text-strong);border-radius:6px;
+  }
+  .m-nav-chapter-input:focus{background:var(--hover-bg);outline:none}
+  .m-nav-scene{padding:9px 10px;margin:2px 0 2px 14px;border-radius:6px;font-size:13px;cursor:pointer;color:var(--text-dim)}
+  .m-nav-scene:active{background:var(--hover-bg)}
+  .m-nav-scene.active{color:var(--accent-hover)}
+  .m-nav-add-row{display:flex;gap:8px;margin:12px 0}
+  .m-nav-book-section-toggle{
+    width:100%;text-align:left;background:transparent;border:none;color:var(--text-muted);
+    font:600 11px 'Manrope';cursor:pointer;padding:10px 0;border-top:1px solid var(--border-soft);
+  }
+  .m-nav-book-section{padding-top:6px}
+}

@@ -49,4 +49,16 @@ export const state = {
   // actual pull directly, only by that check.
   hasRemoteChanges: false,
   remoteChangeCount: 0,
+  // Snapshot of the latest getSyncStatus() result, written by refreshSyncStatusUI — lets the
+  // mobile sync badge show configured/pendingCount/conflictCount/lastPushedAt/lastPulledAt
+  // synchronously on redraw instead of re-fetching IndexedDB on every keystroke elsewhere.
+  lastSyncStatus: null,
+
+  // ---- Mobile layout (src/mobile-ui.js) — only ever read/written when the mobile chrome is the
+  // visible one (see styles.css's mobile breakpoint), but always kept in sync alongside desktop
+  // state since both trees render on every pass. ----
+  mobileTab: "manuscript", // 'manuscript' | 'bible' | 'overview'
+  mobileNavOpen: false,
+  mobileOverviewFilterOpen: false,
+  mobileNotesCollapsed: false, // Summary & To-do drawer, in the manuscript tab
 };

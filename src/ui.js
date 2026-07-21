@@ -1,7 +1,7 @@
 "use strict";
 
 import {
-  uid, escapeHtml, clamp, formatRelativeTime, wordCount, sanitizeFormattingHtml,
+  uid, escapeHtml, clamp, formatRelativeTime, wordCount, truncateWords, sanitizeFormattingHtml,
   data, scene, chapter,
   getSceneAndChapter, getChapter, sceneNumber, sceneLabel, chapterNumber, chapterLabel,
   bibleArrayFor, bibleLabel,
@@ -17,8 +17,12 @@ import { renderSettingsView } from "./settings-ui.js";
 import { renderOverviewView } from "./overview-ui.js";
 import { exportManuscript, exportEpub } from "./export.js";
 import { buildChaptersFromMarkdown } from "./import.js";
+// mobile-ui.js imports several action functions back from this module (see its own imports) —
+// a circular ES module import, safe here because every cross-call happens inside function bodies
+// (event handlers/render calls), never at module top-level.
+import { mountMobileApp, renderMobileApp as refreshMobileApp, refreshMobileSyncStatus, isMobileViewport } from "./mobile-ui.js";
 
-function markDirty(kind, targetId) {
+export function markDirty(kind, targetId) {
   // Set synchronously, ahead of enqueueSync's own IndexedDB write actually landing — main.js's
   // beforeunload handler needs an immediately-current answer, and correctness only requires this
   // flag to ever be true when there's real pending work, not the reverse (refreshSyncStatusUI
@@ -177,7 +181,7 @@ function restorePanelsBeforeOverview() {
 /** Selects a chapter and navigates to it — but never changes view mode (Scene/Chapter/Full is
  *  controlled solely by the topbar toggle now), so this just moves the selection and scrolls
  *  within whatever mode is already active. */
-function openChapter(chapterId) {
+export function openChapter(chapterId) {
   const ch = getChapter(chapterId);
   if (!ch) return;
   const leavingOverview = state.view === "overview";
@@ -233,7 +237,7 @@ function scrollElementToTop(el) {
 
 /** Selects a scene and navigates to it — never changes view mode (see openChapter), just moves
  *  the selection and scrolls/focuses within whatever mode (Scene/Chapter/Full) is already active. */
-function openScene(chapterId, sceneId) {
+export function openScene(chapterId, sceneId) {
   const leavingOverview = state.view === "overview";
   setActiveSceneState(chapterId, sceneId);
 
@@ -307,7 +311,7 @@ function setBibleTab(tab) {
   persistUiPrefs();
 }
 
-function addScene() {
+export function addScene() {
   const ch = getChapter(state.activeChapterId) || data.chapters[data.chapters.length - 1];
   const sc = scene("Untitled Scene", "", "", []);
   ch.scenes.push(sc);
@@ -320,7 +324,7 @@ function addScene() {
   focusSceneText(sc.id);
 }
 
-function addChapter() {
+export function addChapter() {
   const ch = chapter("Untitled Chapter", [
     scene("Untitled Scene", "", "", []),
   ]);
@@ -338,7 +342,7 @@ function addChapter() {
  *  markdown file — chapters split on "### Chapter" headings, scenes within each split further on
  *  "* * *" lines. Story bible entries are untouched. Returns the number of chapters imported;
  *  throws if the file had no "### Chapter" headings to import. */
-function importManuscriptMarkdown(text) {
+export function importManuscriptMarkdown(text) {
   const { title, chapters } = buildChaptersFromMarkdown(text);
   if (!chapters.length) {
     throw new Error('No chapters found — expected "### Chapter" headings under a "## Novel" section.');
@@ -408,7 +412,7 @@ function focusSceneText(sceneId, { focusText = true } = {}) {
   });
 }
 
-function toggleTodo(sceneId, todoId) {
+export function toggleTodo(sceneId, todoId) {
   const { scene: sc } = getSceneAndChapter(sceneId);
   if (!sc) return;
   const t = sc.todos.find((x) => x.id === todoId);
@@ -418,7 +422,7 @@ function toggleTodo(sceneId, todoId) {
   renderRightPanel();
 }
 
-function deleteTodo(sceneId, todoId) {
+export function deleteTodo(sceneId, todoId) {
   const { scene: sc } = getSceneAndChapter(sceneId);
   if (!sc) return;
   sc.todos = sc.todos.filter((x) => x.id !== todoId);
@@ -427,7 +431,7 @@ function deleteTodo(sceneId, todoId) {
   renderRightPanel();
 }
 
-function addTodo(sceneId) {
+export function addTodo(sceneId) {
   const { scene: sc } = getSceneAndChapter(sceneId);
   if (!sc) return;
   const t = { id: uid("todo"), text: "", done: false };
@@ -441,17 +445,17 @@ function addTodo(sceneId) {
   });
 }
 
-function requestDeleteScene(sceneId) {
+export function requestDeleteScene(sceneId) {
   state.deleteSceneConfirm = sceneId;
   renderModal();
 }
 
-function closeDeleteSceneConfirm() {
+export function closeDeleteSceneConfirm() {
   state.deleteSceneConfirm = null;
   renderModal();
 }
 
-function deleteScene(sceneId) {
+export function deleteScene(sceneId) {
   const { chapter: ch, scene: sc } = getSceneAndChapter(sceneId);
   if (!ch || !sc) return;
   const idx = ch.scenes.indexOf(sc);
@@ -478,7 +482,7 @@ function deleteScene(sceneId) {
   render();
 }
 
-function openBibleModal(kind, id) {
+export function openBibleModal(kind, id) {
   const arr = bibleArrayFor(kind);
   const item = id ? arr.find((x) => x.id === id) : null;
   const entries = item ? item.entries.map((e) => ({ ...e })) : [];
@@ -486,7 +490,7 @@ function openBibleModal(kind, id) {
   renderModal();
 }
 
-function closeBibleModal() {
+export function closeBibleModal() {
   state.bibleEdit = null;
   renderModal();
 }
@@ -564,7 +568,7 @@ let app, topbarEl, leftPanelEl, leftHandleEl, centerPanelEl, rightHandleEl, righ
 
 /** Snapshots the parts of `state` that represent "where you are / how the panels look" — not
  *  manuscript content — to localStorage, so reloading the page returns you to the same spot. */
-function persistUiPrefs() {
+export function persistUiPrefs() {
   saveUiPrefs({
     activeBookId: state.activeBookId,
     view: state.view,
@@ -582,6 +586,8 @@ function persistUiPrefs() {
     overviewHighlightTodos: state.overviewHighlightTodos,
     overviewShowWordCounts: state.overviewShowWordCounts,
     overviewChaptersOnly: state.overviewChaptersOnly,
+    mobileTab: state.mobileTab,
+    mobileNotesCollapsed: state.mobileNotesCollapsed,
   });
 }
 
@@ -594,7 +600,7 @@ export function render() {
   persistUiPrefs();
 }
 
-function openSettings() {
+export function openSettings() {
   state.bookSwitcherOpen = false;
   if (state.view === "overview") restorePanelsBeforeOverview();
   state.view = "settings";
@@ -658,6 +664,7 @@ function renderTopbar() {
 
   document.getElementById("syncStatusBadge").onclick = openSettings;
   refreshSyncStatusUI();
+  refreshMobileApp();
 }
 
 /** Updates the GitHub Settings badge and the conflict/setup/pull banners from current IndexedDB
@@ -749,6 +756,14 @@ async function refreshSyncStatusUI() {
       pullBanner.innerHTML = "";
     }
   }
+
+  state.lastSyncStatus = status;
+  // Narrow on purpose: this function also runs on a 20s background timer (see main.js), so unlike
+  // every other refreshMobileApp() call site (all triggered by an explicit user action), this one
+  // must not touch the mobile manuscript tab's contenteditable block — doing so would blow away
+  // an in-progress cursor/selection while someone is mid-sentence on their phone. Only the sync
+  // badge (and the sync sheet's content, if open) depend on sync status.
+  refreshMobileSyncStatus();
 }
 
 function renderBookSwitcherPopover() {
@@ -783,7 +798,7 @@ function closeBookSwitcherOnOutsideClick(e) {
   }
 }
 
-async function switchToBook(bookId) {
+export async function switchToBook(bookId) {
   if (bookId === state.activeBookId) {
     state.bookSwitcherOpen = false;
     renderTopbar();
@@ -821,14 +836,13 @@ async function switchToBook(bookId) {
   }
 }
 
-function closeNewBookModal() {
+export function closeNewBookModal() {
   state.newBookOpen = false;
   renderModal();
 }
 
-async function handleCreateBook() {
-  const titleEl = document.getElementById("newBookTitle");
-  const title = (titleEl.value || "Untitled Book").trim();
+export async function handleCreateBook(titleInput) {
+  const title = (titleInput || "Untitled Book").trim();
 
   await flushSaveNow();
   const bookId = uid("book");
@@ -853,7 +867,7 @@ async function handleCreateBook() {
   focusSceneText(data.chapters[0].scenes[0].id);
 }
 
-function handleSaveBookDetails(newTitle, newAuthor) {
+export function handleSaveBookDetails(newTitle, newAuthor) {
   const title = (newTitle || "").trim() || "Untitled Book";
   const author = (newAuthor || "").trim();
   if (title === data.title && author === (data.author || "")) return;
@@ -867,7 +881,7 @@ function handleSaveBookDetails(newTitle, newAuthor) {
 
 /** Deletes the given book entirely (local IndexedDB only — see persistence.js deleteBook) and
  *  lands on another existing book, or a freshly-seeded one if that was the last book left. */
-async function handleDeleteBook(bookId) {
+export async function handleDeleteBook(bookId) {
   await flushSaveNow();
   await deleteBook(bookId);
   const remainingBooks = await listBooks();
@@ -906,12 +920,17 @@ async function handleDeleteBook(bookId) {
 
 const LEFT_TAB_ICON = {
   manuscript: `<svg viewBox="0 0 384 512" fill="currentColor"><path d="M64 0C28.7 0 0 28.7 0 64L0 448c0 35.3 28.7 64 64 64l256 0c35.3 0 64-28.7 64-64l0-288-128 0c-17.7 0-32-14.3-32-32L224 0 64 0zM256 0l0 128 128 0L256 0zM112 256l160 0c8.8 0 16 7.2 16 16s-7.2 16-16 16l-160 0c-8.8 0-16-7.2-16-16s7.2-16 16-16zm0 64l160 0c8.8 0 16 7.2 16 16s-7.2 16-16 16l-160 0c-8.8 0-16-7.2-16-16s7.2-16 16-16zm0 64l160 0c8.8 0 16 7.2 16 16s-7.2 16-16 16l-160 0c-8.8 0-16-7.2-16-16s7.2-16 16-16z"/></svg>`,
-  bible: `<svg viewBox="0 0 384 512" fill="currentColor"><path d="M0 48V487.7C0 501.1 10.9 512 24.3 512c5 0 9.9-1.5 14-4.4L192 400 345.7 507.6c4.1 2.9 9 4.4 14 4.4c13.4 0 24.3-10.9 24.3-24.3V48c0-26.5-21.5-48-48-48H48C21.5 0 0 21.5 0 48z"/></svg>`,
+  bible: `<svg viewBox="0 0 20 20"><rect x="3" y="2.5" width="14" height="15" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 2.5v15M13 6h2M13 9h2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`,
   book: `<svg viewBox="0 0 512 512" fill="currentColor"><path d="M495.9 166.6c3.2 8.7 .5 18.4-6.4 24.6l-43.3 39.4c1.1 8.3 1.7 16.8 1.7 25.4s-.6 17.1-1.7 25.4l43.3 39.4c6.9 6.2 9.6 15.9 6.4 24.6c-4.4 11.9-9.7 23.3-15.8 34.3l-4.7 8.1c-6.6 11-14 21.4-22.1 31.2c-5.9 7.2-15.7 9.6-24.5 6.8l-55.7-17.7c-13.4 10.3-28.2 18.9-44 25.4l-12.5 57.1c-2 9.1-9 16.3-18.2 17.8c-13.8 2.3-28 3.5-42.5 3.5s-28.7-1.2-42.5-3.5c-9.2-1.5-16.2-8.7-18.2-17.8l-12.5-57.1c-15.8-6.5-30.6-15.1-44-25.4L83.1 425.9c-8.8 2.8-18.6 .3-24.5-6.8c-8.1-9.8-15.5-20.2-22.1-31.2l-4.7-8.1c-6.1-11-11.4-22.4-15.8-34.3c-3.2-8.7-.5-18.4 6.4-24.6l43.3-39.4C64.6 273.1 64 264.6 64 256s.6-17.1 1.7-25.4L22.4 191.2c-6.9-6.2-9.6-15.9-6.4-24.6c4.4-11.9 9.7-23.3 15.8-34.3l4.7-8.1c6.6-11 14-21.4 22.1-31.2c5.9-7.2 15.7-9.6 24.5-6.8l55.7 17.7c13.4-10.3 28.2-18.9 44-25.4l12.5-57.1c2-9.1 9-16.3 18.2-17.8C227.3 1.2 241.5 0 256 0s28.7 1.2 42.5 3.5c9.2 1.5 16.2 8.7 18.2 17.8l12.5 57.1c15.8 6.5 30.6 15.1 44 25.4l55.7-17.7c8.8-2.8 18.6-.3 24.5 6.8c8.1 9.8 15.5 20.2 22.1 31.2l4.7 8.1c6.1 11 11.4 22.4 15.8 34.3zM256 336a80 80 0 1 0 0-160 80 80 0 1 0 0 160z"/></svg>`,
 };
 const LEFT_TAB_LABEL = { manuscript: "Manuscript layout", bible: "Story Bible", book: "Book settings" };
 
 function renderLeftPanel() {
+  renderLeftPanelDesktop();
+  refreshMobileApp();
+}
+
+function renderLeftPanelDesktop() {
   if (state.view === "overview") {
     leftPanelEl.style.display = "none";
     leftHandleEl.style.display = "none";
@@ -964,10 +983,13 @@ function renderLeftPanel() {
     const cardsHtml = arr
       .map((item) => {
         const titles = (item.entries || []).map((e) => e.title).filter(Boolean).join(" · ");
+        const combinedText = (item.entries || []).map((e) => e.text).filter(Boolean).join(" ");
+        const snippet = truncateWords(combinedText, 20);
         return `
       <div class="bible-card" data-bible-kind="${kind}" data-bible-id="${item.id}">
         <div class="name">${escapeHtml(item.name)}</div>
         ${titles ? `<div class="desc">${escapeHtml(titles)}</div>` : ""}
+        ${snippet ? `<div class="snippet">${escapeHtml(snippet)}</div>` : ""}
         <span class="edit-icon">&#9998;</span>
       </div>`;
       })
@@ -1109,7 +1131,7 @@ function updateManuscriptEmptyState(el) {
   el.classList.toggle("is-empty", el.textContent.trim() === "");
 }
 
-function bindManuscriptBlocks(root) {
+export function bindManuscriptBlocks(root) {
   root.querySelectorAll(".manuscript-text[data-scene-id]").forEach((el) => {
     const { scene: sc } = getSceneAndChapter(el.dataset.sceneId);
     if (!sc) return;
@@ -1202,7 +1224,7 @@ function applyFormatting(cmd) {
   else hideSelectionToolbar();
 }
 
-function handleSplitClick() {
+export function handleSplitClick() {
   const info = getManuscriptSelectionInfo();
   if (!info) return;
   const parts = extractRangeParts(info.el, info.range);
@@ -1232,7 +1254,7 @@ function handleSplitClick() {
   }
 }
 
-function performSplit(chapterId, sceneId, beforeHtml, selectedHtml, afterHtml) {
+export function performSplit(chapterId, sceneId, beforeHtml, selectedHtml, afterHtml) {
   const ch = getChapter(chapterId);
   const sc = ch && ch.scenes.find((s) => s.id === sceneId);
   if (!ch || !sc) return;
@@ -1254,7 +1276,7 @@ function performSplit(chapterId, sceneId, beforeHtml, selectedHtml, afterHtml) {
   focusSceneText(newScenes[0].id);
 }
 
-function closeSplitConfirm() {
+export function closeSplitConfirm() {
   state.splitConfirm = null;
   renderModal();
 }
@@ -1298,7 +1320,7 @@ function showSelectionToolbar(info) {
   }
 }
 
-function hideSelectionToolbar() {
+export function hideSelectionToolbar() {
   selectionToolbarEl.style.display = "none";
 }
 
@@ -1319,7 +1341,7 @@ let selectionScrollRaf = null;
  *  only its rect (getBoundingClientRect is always live), so just re-read that and move the
  *  toolbar to match. Only hide if the selection is actually gone. rAF-throttled like the
  *  scroll-spy above — scroll fires far more often than a reposition needs to happen. */
-function handleSelectionScroll() {
+export function handleSelectionScroll() {
   if (selectionToolbarEl.style.display === "none") return;
   if (selectionScrollRaf !== null) return;
   selectionScrollRaf = requestAnimationFrame(() => {
@@ -1422,7 +1444,18 @@ function bindChapterStickyHeaders(root) {
 }
 
 function renderCenter() {
+  renderCenterDesktop();
+  refreshMobileApp();
+}
+
+function renderCenterDesktop() {
   if (state.view === "settings") {
+    // renderSettingsView reads/writes fixed element ids internally — with both chromes always
+    // mounted, only one of the two copies (this one, mobile-ui.js's own) may actually call it at a
+    // time, or they'd collide on the same ids and event handlers would attach to whichever is
+    // first in the DOM (always this desktop one, silently breaking the mobile copy's buttons).
+    // See mobile-ui.js's renderContentInner for the mirrored guard.
+    if (isMobileViewport()) { centerPanelEl.innerHTML = ""; return; }
     renderSettingsView(centerPanelEl, {
       onBack: () => { state.view = "scene"; render(); },
       notifyBookDataChanged: async (bookId) => {
@@ -1537,6 +1570,11 @@ function renderCenter() {
 /* ---- Right panel ---- */
 
 function renderRightPanel() {
+  renderRightPanelDesktop();
+  refreshMobileApp();
+}
+
+function renderRightPanelDesktop() {
   if (state.view === "overview") {
     rightPanelEl.style.display = "none";
     rightHandleEl.style.display = "none";
@@ -1637,6 +1675,11 @@ function renderRightPanel() {
 /* ---- Modal ---- */
 
 function renderModal() {
+  renderModalDesktop();
+  refreshMobileApp();
+}
+
+function renderModalDesktop() {
   if (state.deleteSceneConfirm) {
     const sceneId = state.deleteSceneConfirm;
     const { scene: sc } = getSceneAndChapter(sceneId);
@@ -1713,7 +1756,7 @@ function renderModal() {
     document.getElementById("modalOverlay").addEventListener("mousedown", (e) => {
       if (e.target.id === "modalOverlay") closeNewBookModal();
     });
-    document.getElementById("newBookCreate").onclick = handleCreateBook;
+    document.getElementById("newBookCreate").onclick = () => handleCreateBook(document.getElementById("newBookTitle").value);
     document.getElementById("newBookTitle").focus();
     return;
   }
@@ -1825,6 +1868,7 @@ export function initApp() {
     </div>
     <div id="modalRoot"></div>
     <div class="selection-toolbar" id="selectionToolbar" style="display:none"></div>
+    <div class="mobile-app" id="mobileApp"></div>
   `;
 
   topbarEl = document.getElementById("topbar");
@@ -1838,6 +1882,11 @@ export function initApp() {
 
   setupResize(leftHandleEl, leftPanelEl, { side: "left", min: 160, max: 420 });
   setupResize(rightHandleEl, rightPanelEl, { side: "right", min: 220, max: 460 });
+
+  // Mobile chrome (src/mobile-ui.js) is always mounted alongside the desktop chrome above — a
+  // CSS media query (styles.css) decides which one is actually visible; see that file and
+  // mobile-ui.js's own header comment for why both trees always exist and re-render together.
+  mountMobileApp(document.getElementById("mobileApp"));
 
   try { document.execCommand("defaultParagraphSeparator", false, "p"); } catch { /* unsupported in some browsers, non-fatal */ }
   document.addEventListener("selectionchange", handleSelectionChange);

@@ -45,6 +45,12 @@ export function wordCount(text) {
   return ((text || "").trim().match(/\S+/g) || []).length;
 }
 
+export function truncateWords(text, maxWords) {
+  const words = (text || "").trim().match(/\S+/g) || [];
+  if (words.length <= maxWords) return words.join(" ");
+  return `${words.slice(0, maxWords).join(" ")}…`;
+}
+
 /** Strips a scene body's rich-text HTML down to plain text before counting words in it —
  *  sc.text is sanitized inline HTML (see sanitizeFormattingHtml below), not plain text. */
 function htmlToPlainText(html) {

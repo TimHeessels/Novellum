@@ -140,6 +140,8 @@ function applyRestoredUiPrefs(prefs) {
   if (typeof prefs.overviewHighlightTodos === "boolean") state.overviewHighlightTodos = prefs.overviewHighlightTodos;
   if (typeof prefs.overviewShowWordCounts === "boolean") state.overviewShowWordCounts = prefs.overviewShowWordCounts;
   if (typeof prefs.overviewChaptersOnly === "boolean") state.overviewChaptersOnly = prefs.overviewChaptersOnly;
+  if (["manuscript", "bible", "overview"].includes(prefs.mobileTab)) state.mobileTab = prefs.mobileTab;
+  if (typeof prefs.mobileNotesCollapsed === "boolean") state.mobileNotesCollapsed = prefs.mobileNotesCollapsed;
 
   // Only meaningful if we're actually restoring into overview — otherwise leave the fresh
   // state.js defaults alone rather than trusting a stale snapshot from a different session.
