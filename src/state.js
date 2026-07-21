@@ -23,6 +23,8 @@ export const state = {
   activeBookId: null,
   books: [], // [{ id, title, createdAt, updatedAt }]
   bookSwitcherOpen: false,
+  viewSwitcherOpen: false,
+  settingsOpen: false,
   newBookOpen: false,
   splitConfirm: null, // { chapterId, sceneId, beforeHtml, selectedHtml, afterHtml }
   deleteSceneConfirm: null, // sceneId

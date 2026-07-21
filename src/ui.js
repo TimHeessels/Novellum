@@ -602,8 +602,12 @@ export function render() {
 
 export function openSettings() {
   state.bookSwitcherOpen = false;
-  if (state.view === "overview") restorePanelsBeforeOverview();
-  state.view = "settings";
+  if (isMobileViewport()) {
+    if (state.view === "overview") restorePanelsBeforeOverview();
+    state.view = "settings";
+  } else {
+    state.settingsOpen = true;
+  }
   render();
 }
 
@@ -615,33 +619,47 @@ const VIEW_MODE_ICON = {
 };
 const VIEW_MODE_LABEL = { scene: "Current scene", chapter: "Current chapter", full: "Full manuscript", overview: "Overview" };
 
+const SYNC_ICON = {
+  cloud: `<svg viewBox="0 0 640 512" fill="currentColor"><path d="M537.6 226.6c4.1-10.7 6.4-22.4 6.4-34.6c0-53-43-96-96-96c-19.7 0-38.1 6-53.3 16.2C367 64.2 315.3 32 256 32c-88.4 0-160 71.6-160 160c0 2.7 .1 5.4 .2 8.1C40.2 219.8 0 273.2 0 336c0 79.5 64.5 144 144 144l368 0c70.7 0 128-57.3 128-128c0-61.9-44-113.6-102.4-125.4z"/></svg>`,
+  check: `<svg viewBox="0 0 512 512" fill="currentColor"><path d="M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM369 209L241 337c-9.4 9.4-24.6 9.4-33.9 0l-64-64c-9.4-9.4-9.4-24.6 0-33.9s24.6-9.4 33.9 0l47 47L335 175c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9z"/></svg>`,
+  warning: `<svg viewBox="0 0 512 512" fill="currentColor"><path d="M256 32c14.2 0 27.3 7.5 34.5 19.8l216 368c7.3 12.4 7.3 27.7 .2 40.1S486.3 480 472 480L40 480c-14.3 0-27.6-7.7-34.7-20.1s-7-27.8 .2-40.1l216-368C228.7 39.5 241.8 32 256 32zm0 128c-13.3 0-24 10.7-24 24l0 112c0 13.3 10.7 24 24 24s24-10.7 24-24l0-112c0-13.3-10.7-24-24-24zm32 224a32 32 0 1 0 -64 0 32 32 0 1 0 64 0z"/></svg>`,
+  up: `<svg viewBox="0 0 640 512" fill="currentColor"><path d="M144 480C64.5 480 0 415.5 0 336c0-62.8 40.2-116.2 96.2-135.9c-.1-2.7-.2-5.4-.2-8.1c0-88.4 71.6-160 160-160c59.3 0 111 32.2 138.7 80.2C409.9 102 428.3 96 448 96c53 0 96 43 96 96c0 12.2-2.3 23.8-6.4 34.6C596 238.4 640 290.1 640 352c0 70.7-57.3 128-128 128l-368 0zm79-167c-9.4 9.4-9.4 24.6 0 33.9s24.6 9.4 33.9 0l39-39 0 159c0 13.3 10.7 24 24 24s24-10.7 24-24l0-159 39 39c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-80-80c-9.4-9.4-24.6-9.4-33.9 0l-80 80z"/></svg>`,
+  down: `<svg viewBox="0 0 640 512" fill="currentColor"><path d="M144 480C64.5 480 0 415.5 0 336c0-62.8 40.2-116.2 96.2-135.9c-.1-2.7-.2-5.4-.2-8.1c0-88.4 71.6-160 160-160c59.3 0 111 32.2 138.7 80.2C409.9 102 428.3 96 448 96c53 0 96 43 96 96c0 12.2-2.3 23.8-6.4 34.6C596 238.4 640 290.1 640 352c0 70.7-57.3 128-128 128l-368 0zM296 176c0-13.3-10.7-24-24-24s-24 10.7-24 24l0 159-39-39c-9.4-9.4-24.6-9.4-33.9 0s-9.4 24.6 0 33.9l80 80c9.4 9.4 24.6 9.4 33.9 0l80-80c9.4-9.4 9.4-24.6 0-33.9s-24.6-9.4-33.9 0l-39 39 0-159z"/></svg>`,
+};
+
 function renderTopbar() {
   const currentTitle = data.title || "Untitled Book";
   topbarEl.innerHTML = `
-    <div class="book-switcher">
-      <button class="book-switcher-btn" id="bookSwitcherBtn">${escapeHtml(currentTitle)} <span class="caret">&#9662;</span></button>
-      ${state.bookSwitcherOpen ? renderBookSwitcherPopover() : ""}
-    </div>
-    <div class="view-switcher">
-      <div class="view-mode-toggle">
-        ${["scene", "chapter", "full", "overview"]
-          .map((mode) => {
-            const active = state.view === mode;
-            const id = mode === "overview" ? "topbarOverviewBtn" : `viewMode${mode[0].toUpperCase()}${mode.slice(1)}`;
-            return `<button class="tbtn ${active ? "active" : ""}" id="${id}">${VIEW_MODE_ICON[mode]}<span class="tab-label">${VIEW_MODE_LABEL[mode]}</span></button>`;
-          })
-          .join("")}
+    <div class="topbar-select-box">
+      <div class="topbar-select-group">
+        <div class="topbar-select-label">Book</div>
+        <div class="book-switcher">
+          <button class="topbar-select-btn" id="bookSwitcherBtn">
+            <span class="topbar-select-value serif">${escapeHtml(currentTitle)}</span>
+            <span class="caret">&#9662;</span>
+          </button>
+          ${state.bookSwitcherOpen ? renderBookSwitcherPopover() : ""}
+        </div>
+      </div>
+      <div class="topbar-select-group">
+        <div class="topbar-select-label">View</div>
+        <div class="view-switcher">
+          <button class="topbar-select-btn" id="viewSwitcherBtn">
+            ${VIEW_MODE_ICON[state.view]}
+            <span class="topbar-select-value">${VIEW_MODE_LABEL[state.view]}</span>
+            <span class="caret">${state.viewSwitcherOpen ? "&#9652;" : "&#9662;"}</span>
+          </button>
+          ${state.viewSwitcherOpen ? renderViewSwitcherPopover() : ""}
+        </div>
       </div>
     </div>
     <div class="topbar-actions">
-      <button class="sync-status-badge" id="syncStatusBadge" title="Open sync settings">&hellip;</button>
+      <div class="topbar-select-group">
+        <div class="topbar-select-label">Sync</div>
+        <button class="sync-status-badge" id="syncStatusBadge" title="Open sync settings">&hellip;</button>
+      </div>
     </div>
   `;
-
-  document.getElementById("viewModeScene").onclick = () => setViewMode("scene");
-  document.getElementById("viewModeChapter").onclick = () => setViewMode("chapter");
-  document.getElementById("viewModeFull").onclick = () => setViewMode("full");
-  document.getElementById("topbarOverviewBtn").onclick = openOverview;
 
   document.getElementById("bookSwitcherBtn").onclick = (e) => {
     e.stopPropagation();
@@ -649,6 +667,14 @@ function renderTopbar() {
   };
   topbarEl.querySelectorAll("[data-book-id]").forEach((el) => {
     el.onclick = () => switchToBook(el.dataset.bookId);
+  });
+
+  document.getElementById("viewSwitcherBtn").onclick = (e) => {
+    e.stopPropagation();
+    toggleViewSwitcher();
+  };
+  topbarEl.querySelectorAll("[data-view-mode]").forEach((el) => {
+    el.onclick = () => selectViewMode(el.dataset.viewMode);
   });
   const newBookBtn = topbarEl.querySelector('[data-action="new-book"]');
   if (newBookBtn) {
@@ -678,24 +704,37 @@ async function refreshSyncStatusUI() {
 
   const badge = document.getElementById("syncStatusBadge");
   if (badge) {
-    let label;
-    if (!status.configured) label = "Sync not set up";
-    else if (status.conflictCount > 0) label = `${status.conflictCount} conflict${status.conflictCount > 1 ? "s" : ""}`;
-    else if (state.syncPauseReason) label = "Sync error";
-    else if (status.pendingCount > 0) label = `${status.pendingCount} change${status.pendingCount > 1 ? "s" : ""}`;
-    else if (state.remoteChangeCount > 0) label = `${state.remoteChangeCount} change${state.remoteChangeCount > 1 ? "s" : ""}`;
-    else {
+    let label, icon;
+    if (!status.configured) {
+      label = "Sync not set up";
+      icon = "cloud";
+    } else if (status.conflictCount > 0) {
+      label = `${status.conflictCount} conflict${status.conflictCount > 1 ? "s" : ""}`;
+      icon = "warning";
+    } else if (state.syncPauseReason) {
+      label = "Sync error";
+      icon = "warning";
+    } else if (status.pendingCount > 0) {
+      label = `${status.pendingCount} change${status.pendingCount > 1 ? "s" : ""}`;
+      icon = "up";
+    } else if (state.remoteChangeCount > 0) {
+      label = `${state.remoteChangeCount} change${state.remoteChangeCount > 1 ? "s" : ""}`;
+      icon = "down";
+    } else {
       const lastAt = [status.lastPushedAt, status.lastPulledAt].filter(Boolean).sort().pop();
       label = lastAt ? `Synced ${formatRelativeTime(lastAt)}` : "Not synced yet";
+      icon = lastAt ? "check" : "cloud";
     }
-    badge.textContent = label;
-    badge.classList.toggle("has-conflicts", status.conflictCount > 0);
+    badge.innerHTML = `${SYNC_ICON[icon]}<span class="topbar-select-value">${label}</span>`;
+    badge.classList.toggle("needs-setup", !status.configured);
+    badge.classList.toggle("has-conflicts", status.conflictCount > 0 || !!state.syncPauseReason);
     // Outbox entries get queued locally the moment a book is bootstrapped, regardless of whether
     // GitHub is even connected yet — gate on `configured` too, or this (and the title below) would
     // light up as "pending" while the label itself still says "Sync not set up".
     badge.classList.toggle(
       "has-pending",
-      status.configured && status.conflictCount === 0 && (status.pendingCount > 0 || state.remoteChangeCount > 0)
+      status.configured && status.conflictCount === 0 && !state.syncPauseReason &&
+        (status.pendingCount > 0 || state.remoteChangeCount > 0)
     );
   }
 
@@ -798,6 +837,49 @@ function closeBookSwitcherOnOutsideClick(e) {
   }
 }
 
+function renderViewSwitcherPopover() {
+  const itemsHtml = ["scene", "chapter", "full", "overview"]
+    .map((mode) => {
+      const active = state.view === mode;
+      return `
+        <div class="view-switcher-item ${active ? "active" : ""}" data-view-mode="${mode}">
+          ${VIEW_MODE_ICON[mode]}<span>${VIEW_MODE_LABEL[mode]}</span>
+          ${active ? `<span class="check">&#10003;</span>` : ""}
+        </div>`;
+    })
+    .join("");
+  return `<div class="view-switcher-popover">${itemsHtml}</div>`;
+}
+
+function toggleViewSwitcher() {
+  state.viewSwitcherOpen = !state.viewSwitcherOpen;
+  renderTopbar();
+  if (state.viewSwitcherOpen) {
+    requestAnimationFrame(() => document.addEventListener("mousedown", closeViewSwitcherOnOutsideClick));
+  }
+}
+
+function closeViewSwitcherOnOutsideClick(e) {
+  const switcherEl = topbarEl.querySelector(".view-switcher");
+  if (switcherEl && !switcherEl.contains(e.target)) {
+    state.viewSwitcherOpen = false;
+    document.removeEventListener("mousedown", closeViewSwitcherOnOutsideClick);
+    renderTopbar();
+  }
+}
+
+function selectViewMode(mode) {
+  state.viewSwitcherOpen = false;
+  document.removeEventListener("mousedown", closeViewSwitcherOnOutsideClick);
+  if (mode === "overview") {
+    openOverview();
+  } else if (state.view === mode) {
+    renderTopbar();
+  } else {
+    setViewMode(mode);
+  }
+}
+
 export async function switchToBook(bookId) {
   if (bookId === state.activeBookId) {
     state.bookSwitcherOpen = false;
@@ -838,6 +920,11 @@ export async function switchToBook(bookId) {
 
 export function closeNewBookModal() {
   state.newBookOpen = false;
+  renderModal();
+}
+
+function closeSettingsModal() {
+  state.settingsOpen = false;
   renderModal();
 }
 
@@ -963,7 +1050,11 @@ function renderLeftPanelDesktop() {
           .map((sc) => {
             const isActiveScene = sc.id === state.activeSceneId;
             const cls = isActiveScene ? "current" : "";
-            return `<div class="scene-row ${cls}" data-chapter-id="${ch.id}" data-scene-id="${sc.id}"><span>${escapeHtml(sceneLabel(ch, sc))}</span></div>`;
+            const activeTodos = sc.todos.filter((t) => !t.done).length;
+            const todoChipHtml = activeTodos > 0
+              ? `<span class="scene-todo-chip">${activeTodos} to-do${activeTodos === 1 ? "" : "s"}</span>`
+              : "";
+            return `<div class="scene-row ${cls}" data-chapter-id="${ch.id}" data-scene-id="${sc.id}"><span>${escapeHtml(sceneLabel(ch, sc))}</span>${todoChipHtml}</div>`;
           })
           .join("");
         return `<div class="chapter-block"><div class="chapter-name ${chapterActive}" data-chapter-id="${ch.id}">${escapeHtml(chapterLabel(ch))}</div>${scenesHtml}</div>`;
@@ -982,14 +1073,20 @@ function renderLeftPanelDesktop() {
     const arr = bibleArrayFor(kind);
     const cardsHtml = arr
       .map((item) => {
-        const titles = (item.entries || []).map((e) => e.title).filter(Boolean).join(" · ");
-        const combinedText = (item.entries || []).map((e) => e.text).filter(Boolean).join(" ");
-        const snippet = truncateWords(combinedText, 20);
+        const entriesHtml = (item.entries || [])
+          .filter((e) => e.title || e.text)
+          .map(
+            (e) => `
+        <div class="entry-block">
+          ${e.title ? `<div class="desc">${escapeHtml(e.title)}</div>` : ""}
+          ${e.text ? `<div class="snippet">${escapeHtml(truncateWords(e.text, 20))}</div>` : ""}
+        </div>`
+          )
+          .join("");
         return `
       <div class="bible-card" data-bible-kind="${kind}" data-bible-id="${item.id}">
         <div class="name">${escapeHtml(item.name)}</div>
-        ${titles ? `<div class="desc">${escapeHtml(titles)}</div>` : ""}
-        ${snippet ? `<div class="snippet">${escapeHtml(snippet)}</div>` : ""}
+        ${entriesHtml}
         <span class="edit-icon">&#9998;</span>
       </div>`;
       })
@@ -1450,25 +1547,11 @@ function renderCenter() {
 
 function renderCenterDesktop() {
   if (state.view === "settings") {
-    // renderSettingsView reads/writes fixed element ids internally — with both chromes always
-    // mounted, only one of the two copies (this one, mobile-ui.js's own) may actually call it at a
-    // time, or they'd collide on the same ids and event handlers would attach to whichever is
-    // first in the DOM (always this desktop one, silently breaking the mobile copy's buttons).
-    // See mobile-ui.js's renderContentInner for the mirrored guard.
-    if (isMobileViewport()) { centerPanelEl.innerHTML = ""; return; }
-    renderSettingsView(centerPanelEl, {
-      onBack: () => { state.view = "scene"; render(); },
-      notifyBookDataChanged: async (bookId) => {
-        if (bookId !== state.activeBookId) return;
-        await loadBook(bookId);
-        renderLeftPanel();
-        renderRightPanel();
-      },
-      // Lets settings-ui.js refresh the topbar badge/conflict banner the moment a conflict is
-      // resolved or a manual sync finishes, instead of leaving the stale banner up until the
-      // next 20s tick or a full re-render (e.g. navigating back to the manuscript).
-      onSyncStatusChanged: refreshSyncStatusUI,
-    });
+    // Desktop now opens Settings as a modal (see renderModalDesktop / state.settingsOpen) rather
+    // than routing through state.view, so this is only ever reachable when mobile is showing its
+    // own full-screen Settings screen (mobile-ui.js's renderContentInner) — keep this hidden
+    // panel blank underneath it rather than rendering the full manuscript into it.
+    centerPanelEl.innerHTML = "";
     return;
   }
 
@@ -1758,6 +1841,31 @@ function renderModalDesktop() {
     });
     document.getElementById("newBookCreate").onclick = () => handleCreateBook(document.getElementById("newBookTitle").value);
     document.getElementById("newBookTitle").focus();
+    return;
+  }
+
+  if (state.settingsOpen) {
+    modalRootEl.innerHTML = `
+      <div class="modal-overlay" id="modalOverlay">
+        <div class="modal modal-settings" id="settingsModalBody"></div>
+      </div>
+    `;
+    document.getElementById("modalOverlay").addEventListener("mousedown", (e) => {
+      if (e.target.id === "modalOverlay") closeSettingsModal();
+    });
+    renderSettingsView(document.getElementById("settingsModalBody"), {
+      onBack: closeSettingsModal,
+      notifyBookDataChanged: async (bookId) => {
+        if (bookId !== state.activeBookId) return;
+        await loadBook(bookId);
+        renderLeftPanel();
+        renderRightPanel();
+      },
+      // Lets settings-ui.js refresh the topbar badge/conflict banner the moment a conflict is
+      // resolved or a manual sync finishes, instead of leaving the stale banner up until the
+      // next 20s tick or a full re-render (e.g. closing the modal).
+      onSyncStatusChanged: refreshSyncStatusUI,
+    });
     return;
   }
 

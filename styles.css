@@ -44,22 +44,53 @@ button{font-family:inherit}
 
 /* ---------- Top bar ---------- */
 .topbar{
-  height:54px;flex:none;display:flex;align-items:center;
-  padding:0 20px;border-bottom:1px solid var(--border);
+  height:auto;min-height:54px;flex:none;display:flex;align-items:center;
+  padding:10px 20px;border-bottom:1px solid var(--border);
 }
 .brand{font:600 15px 'Lora',serif;letter-spacing:.2px;color:var(--text-strong)}
 .topbar-actions{margin-left:auto;display:flex;gap:6px;align-items:center}
-.view-switcher{display:flex;gap:10px;margin-left:14px;align-items:center}
-.view-mode-toggle{display:flex;gap:2px;padding:2px;border:1px solid var(--border);border-radius:8px}
-.view-mode-toggle .tbtn{display:flex;align-items:center;gap:6px}
-.view-mode-toggle .tbtn svg{width:12px;height:auto;flex:none}
+
+.topbar-select-box{display:flex;gap:18px}
+.topbar-select-group{display:flex;flex-direction:column;gap:5px;position:relative}
+.topbar-select-label{
+  font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-muted);
+  padding:0 2px;
+}
+.topbar-select-btn{
+  display:flex;align-items:center;gap:8px;cursor:pointer;font-family:inherit;
+  border:none;border-radius:8px;padding:7px 12px;background:var(--active-bg);color:var(--accent-hover);
+}
+.topbar-select-btn:hover{background:oklch(0.23 0.03 70)}
+.topbar-select-btn svg{width:13px;height:auto;flex:none;color:currentColor}
+.topbar-select-value{font-size:13.5px;font-weight:600;white-space:nowrap;color:inherit}
+.topbar-select-value.serif{font-family:'Lora',serif}
+.topbar-select-btn .caret{font-size:10px;color:currentColor;opacity:.7;margin-left:auto}
+
+.view-switcher{position:relative}
+.view-switcher-popover{
+  position:absolute;top:calc(100% + 6px);left:0;min-width:210px;z-index:20;
+  background:var(--modal-bg);border:1px solid var(--modal-border);border-radius:8px;
+  padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);
+}
+.view-switcher-item{
+  display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:6px;cursor:pointer;
+  font-size:13px;color:var(--text);
+}
+.view-switcher-item svg{width:14px;height:auto;flex:none;color:var(--text-muted)}
+.view-switcher-item:hover{background:var(--hover-bg-2)}
+.view-switcher-item.active{background:var(--active-bg);color:var(--accent-hover);font-weight:600}
+.view-switcher-item.active svg{color:var(--accent-hover)}
+.view-switcher-item .check{margin-left:auto;color:var(--accent-hover)}
 
 .sync-status-badge{
-  border:1px solid var(--border);background:transparent;cursor:pointer;border-radius:6px;
-  padding:5px 10px;font-size:11.5px;font-weight:600;color:var(--text-muted);
+  display:flex;align-items:center;gap:7px;
+  border:1px solid var(--border);background:transparent;cursor:pointer;border-radius:7px;
+  padding:7px 13px;font-size:12.5px;font-weight:600;color:var(--text-muted);
   font-family:inherit;transition:background .15s,color .15s,border-color .15s;
 }
+.sync-status-badge svg{width:12px;height:auto;flex:none;color:currentColor}
 .sync-status-badge:hover{background:var(--hover-bg-2);color:var(--text-dim)}
+.sync-status-badge.needs-setup{border-color:var(--accent-hover);color:var(--accent-hover)}
 .sync-status-badge.has-conflicts{color:var(--danger-text);border-color:var(--danger-border)}
 /* Filled accent tone — "here's a real action to take" — for whenever there's something to push
    or pull. Conflicts keep the subtler outline treatment above; the two never apply together (see
@@ -94,13 +125,6 @@ button{font-family:inherit}
 .setup-banner .banner-btn:hover{background:var(--accent-hover);color:var(--bg)}
 
 .book-switcher{position:relative}
-.book-switcher-btn{
-  background:transparent;border:none;cursor:pointer;border-radius:6px;padding:4px 8px;
-  font:600 15px 'Lora',serif;letter-spacing:.2px;color:var(--text-strong);
-  display:flex;align-items:center;gap:6px;
-}
-.book-switcher-btn:hover{background:var(--hover-bg-2)}
-.book-switcher-btn .caret{font-size:10px;color:var(--text-muted)}
 .book-switcher-popover{
   position:absolute;top:calc(100% + 6px);left:0;min-width:200px;z-index:20;
   background:var(--modal-bg);border:1px solid var(--modal-border);border-radius:8px;
@@ -325,12 +349,16 @@ button{font-family:inherit}
 .chapter-name:hover{background:var(--hover-bg)}
 .chapter-name.current{color:var(--accent-hover)}
 .scene-row{
-  display:flex;justify-content:space-between;padding:7px 9px;margin:2px 0 2px 16px;border-radius:6px;
+  display:flex;align-items:center;justify-content:space-between;gap:6px;padding:7px 9px;margin:2px 0 2px 16px;border-radius:6px;
   font-size:12.5px;min-width:0;cursor:pointer;color:var(--text-dim);border-left:2px solid transparent;
 }
 .scene-row:hover{background:var(--hover-bg)}
-.scene-row span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scene-row span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .scene-row.current{color:var(--accent-hover)}
+.scene-todo-chip{
+  flex:none;font-size:10px;font-weight:600;padding:2px 7px;border-radius:20px;white-space:nowrap;
+  background:oklch(0.72 0.13 68 / .13);color:var(--accent-hover);border:1px solid oklch(0.72 0.13 68 / .3);
+}
 
 .dashed-btn{
   display:flex;align-items:center;gap:6px;background:transparent;
@@ -348,6 +376,7 @@ button{font-family:inherit}
 }
 .bible-card:hover{background:var(--hover-bg);border-color:var(--card-border-hover)}
 .bible-card .name{font:600 12.5px 'Lora',serif;margin-bottom:4px;color:var(--text-strong)}
+.bible-card .entry-block+.entry-block{margin-top:6px}
 .bible-card .desc{font-size:11.5px;line-height:1.5;color:var(--text-dim)}
 .bible-card .snippet{font-size:11.5px;line-height:1.5;color:var(--text-muted);margin-top:4px}
 .bible-card .edit-icon{
@@ -459,6 +488,8 @@ button{font-family:inherit}
   padding:24px;box-shadow:0 24px 60px rgba(0,0,0,.5);
 }
 .modal.modal-bible{width:640px;max-height:82vh;overflow-y:auto}
+.modal.modal-settings{width:720px;max-height:85vh;overflow-y:auto}
+.modal-settings .settings-view{max-width:none;margin:0;padding:0}
 .modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
 .modal-title{font:600 15px 'Lora',serif;color:var(--text-strong)}
 .modal-close{background:transparent;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;width:24px;height:24px}
@@ -650,6 +681,7 @@ button{font-family:inherit}
   .m-bible-card{position:relative;padding:11px 12px;border:1px solid var(--card-border);border-radius:8px;cursor:pointer}
   .m-bible-card:active{background:var(--hover-bg)}
   .m-bible-card-name{font:600 13px 'Lora',serif;color:var(--text-strong);margin-bottom:4px}
+  .m-bible-card-entry+.m-bible-card-entry{margin-top:6px}
   .m-bible-card-desc{font-size:12px;line-height:1.5;color:var(--text-dim)}
   .m-bible-card-snippet{font-size:12px;line-height:1.5;color:var(--text-muted);margin-top:4px}
 

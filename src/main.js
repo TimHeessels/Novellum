@@ -6,6 +6,7 @@ import { state } from "./state.js";
 import { DEFAULT_BOOK_ID, listBooks, loadBook, setActiveBookId, persistNow, flushSaveNow, loadUiPrefs } from "./persistence.js";
 import { ensureBookBootstrapped, checkRemoteChanges, completeGithubAppLogin } from "./sync-engine.js";
 import { consumePendingOAuthResult } from "./github-oauth.js";
+import { isMobileViewport } from "./mobile-ui.js";
 
 const REMOTE_CHECK_INTERVAL_MS = 5 * 60000;
 const RESTORABLE_VIEWS = ["scene", "chapter", "full", "overview", "settings"];
@@ -50,7 +51,7 @@ async function consumeOAuthRedirectIfAny() {
     const outcome = await completeGithubAppLogin(result.token, result.installationId);
     if (outcome.needsPick) {
       state.pendingOAuthVaultPick = { repos: outcome.needsPick };
-      state.view = "settings";
+      if (isMobileViewport()) state.view = "settings"; else state.settingsOpen = true;
     }
   } catch (err) {
     state.oauthLoginError = `Signed in, but couldn't connect a repo: ${err.message}`;
@@ -83,10 +84,13 @@ async function boot() {
   state.books = await listBooks();
   state.activeBookId = bookId;
   applyRestoredUiPrefs(uiPrefs);
-  // Applied after uiPrefs, deliberately overriding a restored view: a just-completed OAuth
-  // redirect needs the settings view open regardless of where the user was before leaving for
-  // GitHub (normally the same "settings" spot uiPrefs already restored, but not guaranteed).
-  if (state.pendingOAuthVaultPick || state.oauthLoginError) state.view = "settings";
+  // Applied after uiPrefs, deliberately overriding whatever was restored: a just-completed OAuth
+  // redirect needs Settings open regardless of where the user was before leaving for GitHub.
+  // Desktop shows it as a modal now (see openSettings() in ui.js), so it's a separate flag from
+  // state.view there; mobile still keys its full-screen Settings screen off state.view itself.
+  if (state.pendingOAuthVaultPick || state.oauthLoginError) {
+    if (isMobileViewport()) state.view = "settings"; else state.settingsOpen = true;
+  }
 
   initApp();
 
@@ -130,7 +134,12 @@ function applyRestoredUiPrefs(prefs) {
     state.activeSceneId = data.chapters[0].scenes[0].id;
   }
 
-  if (RESTORABLE_VIEWS.includes(prefs.view)) state.view = prefs.view;
+  // "settings" is only a valid restored view on mobile now — desktop opens Settings as a modal
+  // (state.settingsOpen), which is never persisted, so a leftover "settings" value from before
+  // that change (or from a session that was on mobile) shouldn't be restored into state.view here.
+  if (RESTORABLE_VIEWS.includes(prefs.view) && (prefs.view !== "settings" || isMobileViewport())) {
+    state.view = prefs.view;
+  }
   if (typeof prefs.leftWidth === "number") state.leftWidth = prefs.leftWidth;
   if (typeof prefs.rightWidth === "number") state.rightWidth = prefs.rightWidth;
   if (typeof prefs.leftOpen === "boolean") state.leftOpen = prefs.leftOpen;

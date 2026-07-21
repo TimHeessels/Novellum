@@ -6,7 +6,7 @@ import {
   listOutbox, listConflicts, pushChanges, pullChanges, resolveConflictKeepMine, resolveConflictUseTheirs,
   getLocalContentForConflict, connectToRepo, isUsableVaultRepo, resolveAllConflicts, withSyncLock,
   listBookHistory, isBookClean, previewRestore, restoreToCommit,
-  previewPush, previewPull, checkRemoteChanges, setOutboxEntrySkipped,
+  previewPush, previewPull, checkRemoteChanges, setOutboxEntrySkipped, revertOutboxEntry,
 } from "./sync-engine.js";
 import { getActiveBookId, exportDataAsJson, importDataFromJson } from "./persistence.js";
 import { diffLines, diffWords } from "./diff.js";
@@ -133,10 +133,14 @@ export async function renderSettingsView(container, callbacks, { justPushed = ne
         // whole point of just connecting is to see what's already in the vault.
         setStatus("settingsStatus", "Connected. Syncing…", false);
         const bookId = getActiveBookId();
-        // notifyBookDataChanged runs inside pullChanges's onPulled hook, still holding the sync
-        // lock, so nothing else queued on it can land in the gap and flush stale in-memory `data`
-        // over what this pull just wrote (see withSyncLock's comment in sync-engine.js).
-        const pushResult = await pushChanges({ force: true });
+        // notifyBookDataChanged runs inside pullChanges's (and pushChanges's own pre-push pull)
+        // onPulled hook, still holding the sync lock, so nothing else queued on it can land in the
+        // gap and flush stale in-memory `data` over what this pull just wrote (see withSyncLock's
+        // comment in sync-engine.js).
+        const pushResult = await pushChanges({
+          force: true,
+          onPulled: (bookIds) => Promise.all(bookIds.map((id) => notifyBookDataChanged && notifyBookDataChanged(id))),
+        });
         await pullChanges(bookId, {
           onPulled: () => notifyBookDataChanged && notifyBookDataChanged(bookId),
           justPushed: pushResult.pushedTargets,
@@ -218,9 +222,12 @@ export async function renderSettingsView(container, callbacks, { justPushed = ne
       // Same "re-queue then actually push now" pattern as the single Keep Mine button — one
       // shared force-push covers every conflict just re-queued, rather than one push each.
       const { count } = await resolveAllConflicts("mine");
-      const pushResult = await pushChanges({ force: true });
+      const pushResult = await pushChanges({
+        force: true,
+        onPulled: (bookIds) => Promise.all(bookIds.map((id) => notifyBookDataChanged && notifyBookDataChanged(id))),
+      });
       await renderSettingsView(container, callbacks, { justPushed: pushResult.pushedTargets });
-      setStatus("syncStatus", `Resolved ${count} conflict(s). Pushed ${pushResult.pushed} file(s).`, false);
+      setStatus("syncStatus", `Resolved ${count} conflict(s). ${describePushResult(pushResult)}`, false);
       if (onSyncStatusChanged) onSyncStatusChanged();
     };
   }
@@ -278,9 +285,12 @@ export async function renderSettingsView(container, callbacks, { justPushed = ne
         // "Keep Mine" only re-queues the push — actually push it now instead of leaving the
         // user to notice nothing happened and hit the topbar Push button again themselves.
         await resolveConflictKeepMine(c.key);
-        const pushResult = await pushChanges({ force: true });
+        const pushResult = await pushChanges({
+          force: true,
+          onPulled: (bookIds) => Promise.all(bookIds.map((id) => notifyBookDataChanged && notifyBookDataChanged(id))),
+        });
         await renderSettingsView(container, callbacks, { justPushed: pushResult.pushedTargets });
-        setStatus("syncStatus", `Resolved. Pushed ${pushResult.pushed} file(s), ${pushResult.conflicts} conflict(s).`, pushResult.conflicts > 0);
+        setStatus("syncStatus", `Resolved. ${describePushResult(pushResult)}`, pushResult.conflicts > 0);
         if (onSyncStatusChanged) onSyncStatusChanged();
       };
     }
@@ -316,7 +326,7 @@ export async function renderSettingsView(container, callbacks, { justPushed = ne
       pushPreviewToggleBtn.textContent = isHidden ? "Hide Preview" : "Preview Changes";
       if (isHidden && !panel.dataset.loaded) {
         panel.dataset.loaded = "1";
-        await loadPushPreviewInto(panel);
+        await loadPushPreviewInto(panel, notifyBookDataChanged);
       }
     };
   }
@@ -327,13 +337,14 @@ export async function renderSettingsView(container, callbacks, { justPushed = ne
       pushNowBtn.textContent = "Pushing…";
       setStatus("syncStatus", "Pushing…", false);
       try {
-        const pushResult = await pushChanges({ force: true });
+        const pushResult = await pushChanges({
+          force: true,
+          onPulled: (bookIds) => Promise.all(bookIds.map((id) => notifyBookDataChanged && notifyBookDataChanged(id))),
+        });
         await renderSettingsView(container, callbacks, { justPushed: pushResult.pushedTargets });
         setStatus(
           "syncStatus",
-          pushResult.paused
-            ? `Couldn't push: ${pushResult.pauseReason}`
-            : `Pushed ${pushResult.pushed} file(s), ${pushResult.conflicts} conflict(s).`,
+          describePushResult(pushResult),
           !!pushResult.paused || pushResult.conflicts > 0
         );
         if (onSyncStatusChanged) onSyncStatusChanged();
@@ -526,6 +537,18 @@ function rawContentTitle(kind, raw) {
   return "Scene";
 }
 
+/** Shared status-line phrasing for every pushChanges() call site — folds in the (usually silent)
+ *  pre-push pull step so "why did my manuscript just change?" has an answer right next to "Pushed
+ *  N file(s)." rather than only being discoverable by noticing the pull banner disappeared. */
+function describePushResult(pushResult) {
+  const prePull = pushResult.prePull;
+  const pullPart = prePull && (prePull.pulled > 0 || prePull.conflicts > 0)
+    ? `Pulled ${prePull.pulled} file(s) first${prePull.conflicts > 0 ? ` (${prePull.conflicts} conflict(s))` : ""}. `
+    : "";
+  if (pushResult.paused) return `${pullPart}Couldn't push: ${pushResult.pauseReason}`;
+  return `${pullPart}Pushed ${pushResult.pushed} file(s), ${pushResult.conflicts} conflict(s).`;
+}
+
 function renderPushSection(outbox) {
   const activeCount = outbox.filter((e) => !e.skipped).length;
   const ignoredCount = outbox.length - activeCount;
@@ -533,7 +556,7 @@ function renderPushSection(outbox) {
     <div class="settings-section">
       <div class="section-label" id="pushSectionLabel">Push (${activeCount} pending)</div>
       <div class="settings-status" style="margin:0 0 8px">
-        What pushing right now would send to GitHub, across every book.
+        Pulls anything new from GitHub first, then sends yours.
       </div>
       <div class="settings-status" id="pushIgnoredNote" style="margin:0 0 8px${ignoredCount > 0 ? "" : ";display:none"}">
         ${ignoredCount} change${ignoredCount === 1 ? "" : "s"} marked "Ignore" below — won't be sent until you include ${ignoredCount === 1 ? "it" : "them"} again.
@@ -873,12 +896,25 @@ async function refreshPushHeader() {
   if (stat) stat.textContent = `Pending changes: ${outbox.length}${ignoredCount > 0 ? ` (${ignoredCount} ignored)` : ""}`;
 }
 
+/** Revert is only offered where it's both meaningful and safe: GitHub already has a copy to fall
+ *  back to ("update"/"delete", any kind), or — the common case the user actually wants this for —
+ *  a scene that was created locally and never pushed at all, where "reverting" just means throwing
+ *  the new scene away. Never offered for a brand-new manifest/bible ("create" on those kinds only
+ *  happens before a book's very first sync), since there's nothing on GitHub to fall back to and
+ *  discarding it would mean destroying the only copy of the book's structure. Also never offered
+ *  for "unchanged"/"noop" — there's nothing to discard. */
+function canRevertEntry(e) {
+  if (e.changeType === "update" || e.changeType === "delete") return true;
+  return e.changeType === "create" && e.kind === "scene";
+}
+
 /** Lazily loads and renders what pushing right now would actually send — one row per outbox
  *  entry (across every book, matching pushChanges's own scope), each with its own "View Changes"
- *  toggle plus an "Ignore"/"Include in Push" toggle (setOutboxEntrySkipped) for entries with
- *  actual content to send. The "Push Now" button itself lives outside this panel (see
- *  renderPushSection) so it works whether or not the preview has been expanded. */
-async function loadPushPreviewInto(panel) {
+ *  toggle, an "Ignore"/"Include in Push" toggle (setOutboxEntrySkipped), and — where meaningful —
+ *  a "Revert" action (revertOutboxEntry) that discards the local change entirely instead of just
+ *  hiding it. The "Push Now" button itself lives outside this panel (see renderPushSection) so it
+ *  works whether or not the preview has been expanded. */
+async function loadPushPreviewInto(panel, notifyBookDataChanged) {
   panel.innerHTML = `<div class="diff-loading">Loading&hellip;</div>`;
   const { entries } = await previewPush();
 
@@ -893,6 +929,7 @@ async function loadPushPreviewInto(panel) {
   const rowsHtml = entries
     .map((e) => {
       const showToggle = e.changeType !== "noop";
+      const showRevert = canRevertEntry(e);
       const statusText = e.skipped
         ? `Ignored — won't be sent with this push`
         : `${PUSH_CHANGE_LABEL[e.changeType]}`;
@@ -905,11 +942,21 @@ async function loadPushPreviewInto(panel) {
             ${escapeHtml(statusText)}${multiBook ? ` &middot; ${escapeHtml(bookTitle(e.bookId))}` : ""}
           </div>
         </div>
-        <div class="conflict-actions">
+        <div class="conflict-actions" id="pushEntryActions-${e.key}">
           ${showToggle ? `<button class="tbtn" id="pushEntryToggle-${e.key}">View Changes</button>` : ""}
           ${showToggle ? `<button class="tbtn" id="pushEntrySkip-${e.key}">${e.skipped ? "Include in Push" : "Ignore"}</button>` : ""}
+          ${showRevert ? `<button class="tbtn" id="pushEntryRevert-${e.key}">Revert</button>` : ""}
         </div>
       </div>
+      ${showRevert ? `
+      <div class="settings-status error" id="pushEntryRevertConfirm-${e.key}" style="display:none;margin-top:6px">
+        Discard this local change and use GitHub's current version instead?
+        ${e.changeType === "create" ? " This scene was never pushed — discarding it can't be undone." : ""}
+        <div class="settings-actions-row" style="margin-top:6px">
+          <button class="modal-btn done" id="pushEntryRevertYes-${e.key}">Yes, Revert</button>
+          <button class="tbtn" id="pushEntryRevertCancel-${e.key}">Cancel</button>
+        </div>
+      </div>` : ""}
       ${showToggle ? `<div class="conflict-diff" id="pushEntryDiff-${e.key}" style="display:none"></div>` : ""}
     </div>`;
     })
@@ -936,7 +983,38 @@ async function loadPushPreviewInto(panel) {
       skipBtn.onclick = async () => {
         skipBtn.disabled = true;
         await setOutboxEntrySkipped(e.key, !e.skipped);
-        await Promise.all([loadPushPreviewInto(panel), refreshPushHeader()]);
+        await Promise.all([loadPushPreviewInto(panel, notifyBookDataChanged), refreshPushHeader()]);
+      };
+    }
+    const revertBtn = document.getElementById(`pushEntryRevert-${e.key}`);
+    const revertConfirm = document.getElementById(`pushEntryRevertConfirm-${e.key}`);
+    const revertActions = document.getElementById(`pushEntryActions-${e.key}`);
+    if (revertBtn) {
+      revertBtn.onclick = () => {
+        revertConfirm.style.display = "block";
+        revertActions.style.display = "none";
+      };
+    }
+    const revertCancelBtn = document.getElementById(`pushEntryRevertCancel-${e.key}`);
+    if (revertCancelBtn) {
+      revertCancelBtn.onclick = () => {
+        revertConfirm.style.display = "none";
+        revertActions.style.display = "";
+      };
+    }
+    const revertYesBtn = document.getElementById(`pushEntryRevertYes-${e.key}`);
+    if (revertYesBtn) {
+      revertYesBtn.onclick = async () => {
+        revertYesBtn.disabled = true;
+        revertYesBtn.textContent = "Reverting…";
+        // Same withSyncLock-wrapped "write + refresh in-memory data" pattern as conflict
+        // resolution above — without it, a background auto-sync tick landing in the gap could
+        // flush stale in-memory `data` over what revertOutboxEntry just wrote.
+        await withSyncLock(async () => {
+          await revertOutboxEntry(e.key);
+          if (notifyBookDataChanged) await notifyBookDataChanged(e.bookId);
+        });
+        await Promise.all([loadPushPreviewInto(panel, notifyBookDataChanged), refreshPushHeader()]);
       };
     }
   });
@@ -1336,13 +1414,14 @@ async function loadRestorePreviewInto(diffEl, bookId, commitSha, container, call
         if (callbacks.notifyBookDataChanged) await callbacks.notifyBookDataChanged(bookId);
       });
       // Separate, not-nested call — pushes the restored state forward as new commits.
-      const pushResult = await pushChanges({ force: true });
+      const pushResult = await pushChanges({
+        force: true,
+        onPulled: (bookIds) => Promise.all(bookIds.map((id) => callbacks.notifyBookDataChanged && callbacks.notifyBookDataChanged(id))),
+      });
       await renderSettingsView(container, callbacks, { justPushed: pushResult.pushedTargets });
       const statusEl = document.getElementById("syncStatus");
       if (statusEl) {
-        statusEl.textContent = pushResult.paused
-          ? `Restored locally — couldn't push: ${pushResult.pauseReason}`
-          : `Restored and pushed ${pushResult.pushed} file(s).`;
+        statusEl.textContent = `Restored. ${describePushResult(pushResult)}`;
         statusEl.classList.toggle("error", !!pushResult.paused);
       }
       if (callbacks.onSyncStatusChanged) callbacks.onSyncStatusChanged();

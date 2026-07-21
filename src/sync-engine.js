@@ -178,17 +178,41 @@ export function withSyncLock(fn) {
 }
 
 /** Pushes every pending outbox entry to GitHub — the only thing that ever creates commits. Only
- *  ever runs when something (a click) asks for it; nothing in this app calls this on a timer. */
-export function pushChanges({ force = false } = {}) {
+ *  ever runs when something (a click) asks for it; nothing in this app calls this on a timer.
+ *
+ *  Pulls first, for every book that has anything pending — so a push doesn't need the user to have
+ *  separately noticed and clicked Pull first, and doesn't need to fail into a conflict just because
+ *  GitHub moved on in the meantime. This is safe by construction: reconcileBook only ever
+ *  fast-forwards a target with no pending outbox entry, and defers to a conflict record (same as
+ *  today) for anything genuinely contested — it can never silently clobber a local edit. Runs
+ *  inside the same withSyncLock as the push itself (reconcileBook is called directly, not via
+ *  pullChanges, since withSyncLock isn't reentrant). `onPulled`, if given, runs with the distinct
+ *  bookIds that actually pulled something, so a caller can refresh in-memory `data` for whichever
+ *  of those is the currently open book. */
+export function pushChanges({ force = false, onPulled } = {}) {
   return withSyncLock(async () => {
     // A scene deleted (or replaced by an import) moments ago might still be sitting in IndexedDB
     // if its debounced local save hasn't landed yet — pushOne would then see a live row and push
     // an update instead of the deletion. Flushing first guarantees the outbox is drained against
     // the same local state the user actually sees.
     await flushSaveNow();
+
+    const outboxBookIds = [...new Set((await dbGetAll("outbox")).map((e) => e.bookId))];
+    let prePulled = 0;
+    let prePullConflicts = 0;
+    const prePullBookIds = [];
+    for (const id of outboxBookIds) {
+      const result = await reconcileBook(id);
+      if (result.pulled > 0) prePullBookIds.push(id);
+      prePulled += result.pulled;
+      prePullConflicts += result.conflicts;
+    }
+    if (prePulled > 0) await patchGithubSettings({ lastPulledAt: new Date().toISOString() });
+    if (onPulled && prePullBookIds.length > 0) await onPulled(prePullBookIds);
+
     const pushResult = await drainOutbox(undefined, { force });
     if (!pushResult.paused) await patchGithubSettings({ lastPushedAt: new Date().toISOString() });
-    return pushResult;
+    return { ...pushResult, prePull: { pulled: prePulled, conflicts: prePullConflicts, bookIds: prePullBookIds } };
   });
 }
 
@@ -951,6 +975,69 @@ export async function resolveConflictUseTheirs(key) {
 
   await dbDelete("outbox", key);
   await dbDelete("conflicts", key);
+}
+
+/**
+ * Discards one pending local change and snaps that single object back to GitHub's current state —
+ * the "Revert" action in the push preview, for something like a new scene the user decides they
+ * don't want after all. Unlike Ignore (setOutboxEntrySkipped), this doesn't just hide the change;
+ * it undoes it and clears the outbox entry.
+ *
+ * If GitHub has never seen this target (a brand-new scene that was never pushed), there's nothing
+ * to revert *to* — the only sensible interpretation is to delete the local copy. For anything
+ * GitHub does have a copy of, this applies that remote copy locally, same as resolveConflictUseTheirs
+ * does for an already-detected conflict — the difference is this fetches the remote copy live
+ * (there's no conflict record yet, since nothing collided) rather than reading a stashed one.
+ */
+export async function revertOutboxEntry(key) {
+  const entry = await dbGet("outbox", key);
+  if (!entry) return;
+  const { bookId, kind, targetId } = entry;
+  const { token, owner, repo, defaultBranch } = await getGithubSettings();
+  const path = pathForEntry(entry);
+  const remote = await gh.getFile(token, owner, repo, path);
+
+  if (!remote) {
+    // Never pushed — only a scene create is safe to just discard (manifest/bible always exist
+    // once a book is bootstrapped, so this branch shouldn't be reachable for them in practice).
+    if (kind === "scene") {
+      await dbDelete("scenes", targetId);
+      await dbDelete("sceneSync", targetId);
+    }
+  } else if (kind === "scene") {
+    const existing = await dbGet("scenes", targetId);
+    if (existing) {
+      // Reverting an edit to a scene that's still here — overwrite with GitHub's content in place.
+      await dbPut("scenes", { ...existing, ...markdownToScene(remote.content) });
+    } else {
+      // Reverting a local deletion — the scene row is gone, so its chapter/order has to come from
+      // GitHub's current manifest (the local manifest no longer references it).
+      const remoteByPath = await getBookRemoteTree(token, owner, repo, defaultBranch || "main", bookId);
+      const manifestSha = remoteByPath.get(`books/${bookId}/manifest.json`);
+      const remoteManifest = manifestSha ? JSON.parse((await gh.getBlob(token, owner, repo, manifestSha)).content) : null;
+      const placement = remoteManifest?.chapters
+        ?.flatMap((ch) => (ch.sceneIds || []).map((id, scIndex) => ({ id, chapterId: ch.id, order: scIndex })))
+        .find((p) => p.id === targetId);
+      if (placement) {
+        await dbPut("scenes", {
+          id: targetId, bookId, chapterId: placement.chapterId, order: placement.order,
+          ...markdownToScene(remote.content),
+        });
+      }
+    }
+    await dbPut("sceneSync", { id: targetId, bookId, remoteSha: remote.sha });
+  } else if (kind === "bible") {
+    await applyRemoteBible(bookId, JSON.parse(remote.content));
+    const meta = (await dbGet("manifestMeta", bookId)) || { bookId };
+    await dbPut("manifestMeta", { ...meta, bibleSha: remote.sha });
+  } else if (kind === "manifest") {
+    const remoteByPath = await getBookRemoteTree(token, owner, repo, defaultBranch || "main", bookId);
+    await applyRemoteManifest(bookId, JSON.parse(remote.content), remoteByPath, token, owner, repo);
+    const meta = (await dbGet("manifestMeta", bookId)) || { bookId };
+    await dbPut("manifestMeta", { ...meta, manifestSha: remote.sha });
+  }
+
+  await dbDelete("outbox", key);
 }
 
 /** Resolves every current conflict the same way — "mine" (resolveConflictKeepMine) or "theirs"

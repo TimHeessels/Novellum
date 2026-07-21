@@ -456,14 +456,20 @@ function renderBibleTab(container) {
   const arr = bibleArrayFor(kind);
   const cardsHtml = arr
     .map((item) => {
-      const titles = (item.entries || []).map((e) => e.title).filter(Boolean).join(" · ");
-      const combinedText = (item.entries || []).map((e) => e.text).filter(Boolean).join(" ");
-      const snippet = truncateWords(combinedText, 20);
+      const entriesHtml = (item.entries || [])
+        .filter((e) => e.title || e.text)
+        .map(
+          (e) => `
+        <div class="m-bible-card-entry">
+          ${e.title ? `<div class="m-bible-card-desc">${escapeHtml(e.title)}</div>` : ""}
+          ${e.text ? `<div class="m-bible-card-snippet">${escapeHtml(truncateWords(e.text, 20))}</div>` : ""}
+        </div>`
+        )
+        .join("");
       return `
         <div class="m-bible-card" data-bible-id="${item.id}">
           <div class="m-bible-card-name">${escapeHtml(item.name)}</div>
-          ${titles ? `<div class="m-bible-card-desc">${escapeHtml(titles)}</div>` : ""}
-          ${snippet ? `<div class="m-bible-card-snippet">${escapeHtml(snippet)}</div>` : ""}
+          ${entriesHtml}
         </div>`;
     })
     .join("");
